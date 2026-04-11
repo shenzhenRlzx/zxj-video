@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>扫码记录</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="title">
+      <h1>扫码监听系统</h1>
+      <p class="subtitle">监听中 <span class="dot"></span></p>
+    </div>
+  </header>
+
+  <section class="latest">
+    <div class="latest-card">
+      <div class="label">最近扫码</div>
+      <div id="latestBarcode" class="barcode">暂无</div>
+      <div id="latestTime" class="time">--</div>
+    </div>
+  </section>
+
+  <section class="query">
+    <div class="filters">
+      <input id="searchInput" type="text" placeholder="按单号模糊搜索" />
+      <input id="dateInput" type="date" />
+      <select id="statusSelect">
+        <option value="active">正常记录</option>
+        <option value="deleted">已删除记录</option>
+      </select>
+      <button id="searchBtn">查询</button>
+      <button id="resetBtn">重置</button>
+      <button id="exportBtn">导出 CSV</button>
+      <button id="simulateBtn">模拟扫码</button>
+    </div>
+
+    <div class="table-wrapper">
+      <table>
+        <thead>
+          <tr>
+            <th class="hidden-col">序号</th>
+            <th>单号</th>
+            <th>扫码时间</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="recordsBody"></tbody>
+      </table>
+    </div>
+    <div class="pagination">
+      <button id="prevPageBtn">上一页</button>
+      <span id="pageInfo">第 1 页 / 共 1 页</span>
+      <button id="nextPageBtn">下一页</button>
+      <select id="pageSizeSelect">
+        <option value="10">每页 10 条</option>
+        <option value="20">每页 20 条</option>
+        <option value="50">每页 50 条</option>
+      </select>
+    </div>
+  </section>
+
+  <div id="flash" class="flash"></div>
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">确认删除</div>
+      <div class="modal-body" id="modalBody">确定要删除这条记录吗？</div>
+      <div class="modal-actions">
+        <button id="cancelDeleteBtn" class="modal-cancel">取消</button>
+        <button id="confirmDeleteBtn" class="modal-confirm">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

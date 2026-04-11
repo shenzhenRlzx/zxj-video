@@ -1,0 +1,63 @@
+:root {
+  --green: #1b8f4e;
+  --green-dark: #0f6a36;
+  --text: #f6fffb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: transparent;
+  font-family: "Space Grotesk", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: linear-gradient(135deg, var(--green) 0%, var(--green-dark) 100%);
+  color: var(--text);
+  padding: 16px 18px;
+  border-radius: 16px;
+  box-shadow: 0 12px 24px rgba(10, 40, 24, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  animation: slideIn 0.25s ease-out;
+}
+
+.badge {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.2);
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.title {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  opacity: 0.85;
+}
+
+.message {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(40px);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}

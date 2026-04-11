@@ -1,0 +1,42 @@
+{
+  "name": "zxj-video-v4",
+  "version": "0.1.0",
+  "description": "Electron + sql.js barcode scanner",
+  "main": "main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64"
+  },
+  "dependencies": {
+    "sql.js": "^1.9.0"
+  },
+  "devDependencies": {
+    "electron": "^30.0.1",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.zxj.barcode.scanner",
+    "productName": "ZXJ Barcode Scanner",
+    "files": [
+      "main.js",
+      "preload.js",
+      "toast-preload.js",
+      "database.js",
+      "renderer/**/*",
+      "node_modules/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
