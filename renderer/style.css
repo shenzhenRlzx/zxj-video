@@ -48,6 +48,41 @@ body {
   gap: 8px;
 }
 
+.nav {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+}
+
+.nav-link:hover {
+  background: rgba(255, 253, 250, 0.8);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.nav-link.active {
+  background: #fffdfa;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.tcp-info {
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
 .dot {
   width: 10px;
   height: 10px;
@@ -115,6 +150,69 @@ body {
   flex: 1;
 }
 
+.devices-card {
+  background: var(--card);
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  padding: 16px 16px 10px;
+  display: grid;
+  gap: 12px;
+}
+
+.devices-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.devices-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.devices-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.devices-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.devices-table-wrapper {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+  background: #fffdfa;
+}
+
+.devices-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.devices-table th,
+.devices-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  font-size: 13px;
+}
+
+.devices-table thead {
+  background: #f3eee5;
+}
+
+.devices-table tbody tr:hover {
+  background: #faf6ef;
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;
@@ -123,13 +221,32 @@ body {
 }
 
 input[type="text"],
-input[type="date"] {
+input[type="date"],
+input[type="number"] {
   border: 1px solid var(--line);
   padding: 10px 14px;
   border-radius: 10px;
   font-size: 14px;
   min-width: 200px;
   background: #fffdfa;
+}
+
+input[type="number"] {
+  min-width: 120px;
+}
+
+.status-text {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 6px;
+}
+
+.secondary {
+  background: #6b7280;
+}
+
+.secondary:hover {
+  background: #4b5563;
 }
 
 select {
@@ -210,6 +327,17 @@ tbody tr:hover {
 
 .hidden-col {
   display: none;
+}
+
+.mini-btn {
+  background: var(--brand);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.mini-btn:hover {
+  background: var(--brand-dark);
 }
 
 .action-btn {

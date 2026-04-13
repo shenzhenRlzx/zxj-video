@@ -11,7 +11,11 @@
   <header class="header">
     <div class="title">
       <h1>扫码监听系统</h1>
-      <p class="subtitle">监听中 <span class="dot"></span></p>
+      <div class="nav">
+        <a class="nav-link active" href="index.html">扫码记录</a>
+        <a class="nav-link" href="devices.html">工作台管理</a>
+      </div>
+      <p class="subtitle">扫码记录 <span class="dot"></span></p>
     </div>
   </header>
 
@@ -27,6 +31,9 @@
     <div class="filters">
       <input id="searchInput" type="text" placeholder="按单号模糊搜索" />
       <input id="dateInput" type="date" />
+      <select id="deviceFilterSelect">
+        <option value="">全部工作台</option>
+      </select>
       <select id="statusSelect">
         <option value="active">正常记录</option>
         <option value="deleted">已删除记录</option>
@@ -43,6 +50,7 @@
           <tr>
             <th class="hidden-col">序号</th>
             <th>单号</th>
+            <th>工作台</th>
             <th>扫码时间</th>
             <th>操作</th>
           </tr>

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>工作台管理</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="title">
+      <h1>扫码监听系统</h1>
+      <div class="nav">
+        <a class="nav-link" href="index.html">扫码记录</a>
+        <a class="nav-link active" href="devices.html">工作台管理</a>
+      </div>
+      <p class="subtitle">工作台管理 <span class="dot"></span></p>
+      <p id="localIpInfo" class="subtitle tcp-info">本机IP: --</p>
+    </div>
+  </header>
+
+  <section class="query">
+    <div class="devices-card">
+      <div class="devices-top">
+        <div class="devices-title">扫码工作台</div>
+        <div class="devices-actions">
+          <button id="connectEnabledBtn" class="secondary">连接已启用</button>
+          <button id="disconnectAllBtn" class="secondary">全部断开</button>
+        </div>
+      </div>
+      <div class="devices-add">
+        <input id="deviceNameInput" type="text" placeholder="工作台名称(可选)" />
+        <input id="deviceHostInput" type="text" placeholder="IP" />
+        <input id="devicePortInput" type="number" inputmode="numeric" placeholder="端口" />
+        <button id="addDeviceBtn">添加</button>
+      </div>
+      <div class="devices-table-wrapper">
+        <table class="devices-table">
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>IP</th>
+              <th>端口</th>
+              <th>启用</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="devicesBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <script src="devices.js"></script>
+</body>
+</html>

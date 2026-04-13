@@ -10,6 +10,7 @@ const exportBtnEl = document.getElementById('exportBtn');
 const simulateBtnEl = document.getElementById('simulateBtn');
 const flashEl = document.getElementById('flash');
 const latestCardEl = document.querySelector('.latest-card');
+const deviceFilterSelectEl = document.getElementById('deviceFilterSelect');
 const modalEl = document.getElementById('modal');
 const modalBodyEl = document.getElementById('modalBody');
 const cancelDeleteBtnEl = document.getElementById('cancelDeleteBtn');
@@ -41,7 +42,7 @@ function renderRecords(records) {
   if (!records.length) {
     const row = document.createElement('tr');
     const cell = document.createElement('td');
-    cell.colSpan = 4;
+    cell.colSpan = 5;
     cell.textContent = '暂无记录';
     cell.style.color = '#888';
     row.appendChild(cell);
@@ -60,6 +61,10 @@ function renderRecords(records) {
     const barcodeCell = document.createElement('td');
     barcodeCell.textContent = record.barcode;
     row.appendChild(barcodeCell);
+
+    const deviceCell = document.createElement('td');
+    deviceCell.textContent = record.device_name || record.device_host || '--';
+    row.appendChild(deviceCell);
 
     const timeCell = document.createElement('td');
     timeCell.textContent = formatTime(record.scanned_at);
@@ -92,10 +97,12 @@ function renderPagination() {
 async function loadRecords() {
   const keyword = searchInputEl.value.trim();
   const date = dateInputEl.value || null;
+  const deviceId = deviceFilterSelectEl ? deviceFilterSelectEl.value : '';
   const onlyDeleted = statusSelectEl.value === 'deleted';
   const result = await window.api.queryRecords({
     keyword: keyword || null,
     date,
+    deviceId: deviceId || null,
     page: currentPage,
     pageSize,
     onlyDeleted
@@ -104,6 +111,32 @@ async function loadRecords() {
   totalRecords = result.total || 0;
   renderRecords(currentRecords);
   renderPagination();
+}
+
+function renderDeviceFilter(devices) {
+  if (!deviceFilterSelectEl) return;
+  const currentValue = deviceFilterSelectEl.value;
+  deviceFilterSelectEl.innerHTML = '';
+  const allOpt = document.createElement('option');
+  allOpt.value = '';
+  allOpt.textContent = '全部工作台';
+  deviceFilterSelectEl.appendChild(allOpt);
+
+  (devices || []).forEach((d) => {
+    const opt = document.createElement('option');
+    opt.value = String(d.id);
+    opt.textContent = d.name || `${d.host}:${d.port}`;
+    deviceFilterSelectEl.appendChild(opt);
+  });
+
+  const hasValue = Array.from(deviceFilterSelectEl.options).some((o) => o.value === currentValue);
+  deviceFilterSelectEl.value = hasValue ? currentValue : '';
+}
+
+async function loadDevicesForFilter() {
+  if (!deviceFilterSelectEl) return;
+  const devices = await window.api.listDevices();
+  renderDeviceFilter(devices);
 }
 
 function flash() {
@@ -209,6 +242,11 @@ nextPageBtnEl.addEventListener('click', () => {
   loadRecords();
 });
 
+deviceFilterSelectEl?.addEventListener('change', () => {
+  currentPage = 1;
+  loadRecords();
+});
+
 window.api.onBarcode((record) => {
   // Real-time feedback for each scan.
   setLatest(record);
@@ -220,6 +258,7 @@ window.api.onBarcode((record) => {
 
 window.addEventListener('DOMContentLoaded', async () => {
   pageSize = Number(pageSizeSelectEl.value);
+  await loadDevicesForFilter();
   await loadRecords();
   if (currentRecords.length) setLatest(currentRecords[0]);
 });
