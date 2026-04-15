@@ -51,17 +51,16 @@
             <input id="videoNameInput" type="text" placeholder="录像设备名称(必填，如 海康NVR1)" />
             <div class="video-form-row">
               <input id="videoIpInput" type="text" placeholder="设备IP地址，例如 192.168.1.200" />
-              <input id="videoHttpPortInput" type="number" inputmode="numeric" placeholder="HTTP端口，例如 80" />
+              <input id="videoHttpPortInput" type="number" inputmode="numeric" placeholder="HTTP端口(必填，例如 80)" />
             </div>
             <div class="video-form-row">
               <input id="videoUserInput" type="text" placeholder="登录账号(可选)" />
               <input id="videoPassInput" type="password" placeholder="登录密码(可选)" />
             </div>
             <div class="video-form-row">
-              <input id="videoPortInput" type="number" inputmode="numeric" placeholder="SDK端口，例如 8000" />
-              <input id="videoRtspPortInput" type="number" inputmode="numeric" placeholder="RTSP端口(可选，默认 554)" />
+              <input id="videoPortInput" type="number" inputmode="numeric" placeholder="SDK端口(必填，例如 8000)" />
+              <input id="videoRtspPortInput" type="number" inputmode="numeric" placeholder="RTSP端口(必填，例如 554)" />
             </div>
-            <textarea id="videoExtraInput" placeholder="扩展参数(JSON，可选)，例如：{\"deviceId\":\"HK001\"}"></textarea>
           </div>
           <div class="video-actions">
             <button id="loadChannelsBtn" class="secondary">加载通道列表</button>
@@ -96,6 +95,7 @@
         <div id="livePreviewStatus" class="status-text" style="margin-top: 8px;">未播放</div>
       </div>
       <div class="modal-actions">
+        <button id="startLivePreviewBtn" class="secondary">播放</button>
         <button id="stopLivePreviewBtn" class="secondary">停止</button>
         <button id="closeLivePreviewBtn">关闭</button>
       </div>

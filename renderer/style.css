@@ -277,6 +277,18 @@ body {
   background: #faf6ef;
 }
 
+.devices-table tbody tr.row-selected {
+  background: #fff2d9;
+}
+
+.devices-table tbody tr.row-selected:hover {
+  background: #ffe8c2;
+}
+
+.devices-table tbody tr {
+  cursor: pointer;
+}
+
 .filters {
   display: flex;
   flex-wrap: wrap;

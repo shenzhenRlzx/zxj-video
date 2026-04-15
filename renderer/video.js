@@ -6,7 +6,6 @@ const videoPortInputEl = document.getElementById('videoPortInput');
 const videoUserInputEl = document.getElementById('videoUserInput');
 const videoPassInputEl = document.getElementById('videoPassInput');
 const videoRtspPortInputEl = document.getElementById('videoRtspPortInput');
-const videoExtraInputEl = document.getElementById('videoExtraInput');
 const newBtnEl = document.getElementById('newBtn');
 const deleteBtnEl = document.getElementById('deleteBtn');
 const saveBtnEl = document.getElementById('saveBtn');
@@ -23,6 +22,7 @@ const livePreviewModalEl = document.getElementById('livePreviewModal');
 const livePreviewTitleEl = document.getElementById('livePreviewTitle');
 let livePreviewVideoEl = document.getElementById('livePreviewVideo');
 const livePreviewStatusEl = document.getElementById('livePreviewStatus');
+const startLivePreviewBtnEl = document.getElementById('startLivePreviewBtn');
 const stopLivePreviewBtnEl = document.getElementById('stopLivePreviewBtn');
 const closeLivePreviewBtnEl = document.getElementById('closeLivePreviewBtn');
 const toggleMuteBtnEl = document.getElementById('toggleMuteBtn');
@@ -87,6 +87,7 @@ let liveErrorHandler = null;
 let liveWatchdogTimer = null;
 let liveOpening = false;
 let liveVideoHandlers = null;
+let liveCurrentVideoDeviceId = null;
 
 function setLiveRetry(count) {
   if (liveRetryEl) liveRetryEl.textContent = `重连: ${Number(count) || 0}`;
@@ -167,11 +168,11 @@ function shouldAutoReconnect() {
   return !!autoReconnectChkEl?.checked;
 }
 
-function scheduleReconnect() {
+function scheduleReconnect({ force } = {}) {
   if (!liveBaseFlvUrl) return;
   if (!shouldAutoReconnect()) return;
   if (liveReconnectTimer) return;
-  if (liveOpening) return;
+  if (liveOpening && !force) return;
   liveRetryCount += 1;
   setLiveRetry(liveRetryCount);
   setLiveStatus(`连接异常，${Math.min(10, 2 + liveRetryCount)}秒后重连...`);
@@ -180,7 +181,7 @@ function scheduleReconnect() {
     liveReconnectTimer = null;
     const streamType = Number(streamTypeSelectEl?.value || 2) || 2;
     const nextUrl = buildFlvUrlWithStreamType(liveBaseFlvUrl, streamType);
-    openLivePreview({ title: livePreviewTitleEl?.textContent || '实时预览', flvUrl: nextUrl, channelId: liveCurrentChannel, isReconnect: true });
+    openLivePreview({ title: livePreviewTitleEl?.textContent || '实时预览', flvUrl: nextUrl, channelId: liveCurrentChannel, videoDeviceId: liveCurrentVideoDeviceId, isReconnect: true });
   }, delayMs);
 }
 
@@ -208,7 +209,7 @@ async function probeStream(urlString) {
   }
 }
 
-async function stopLivePreview() {
+async function stopLivePreview({ preserve } = {}) {
   clearReconnectTimer();
   clearWatchdogTimer();
   stopMetrics();
@@ -240,15 +241,18 @@ async function stopLivePreview() {
       await fetch(`${liveCurrentOrigin}/live/stop?channel=${encodeURIComponent(liveCurrentChannel)}`, { method: 'POST' });
     } catch (e) {}
   }
-  liveCurrentChannel = null;
-  liveCurrentOrigin = null;
-  liveBaseFlvUrl = null;
+  if (!preserve) {
+    liveCurrentChannel = null;
+    liveCurrentOrigin = null;
+    liveBaseFlvUrl = null;
+    liveCurrentVideoDeviceId = null;
+  }
   liveRetryCount = 0;
   setLiveRetry(0);
   setLiveStatus('已停止');
 }
 
-async function openLivePreview({ title, flvUrl, channelId, isReconnect } = {}) {
+async function openLivePreview({ title, flvUrl, channelId, videoDeviceId, isReconnect } = {}) {
   if (!livePreviewModalEl || !livePreviewVideoEl) return;
   const ok = await ensureFlvJsLoaded();
   if (!ok || !window.flvjs || typeof window.flvjs.isSupported !== 'function' || !window.flvjs.isSupported()) {
@@ -271,34 +275,43 @@ async function openLivePreview({ title, flvUrl, channelId, isReconnect } = {}) {
   try {
     const u = new URL(String(flvUrl));
     origin = u.origin;
-    const st = u.searchParams.get('streamType');
-    if (st && streamTypeSelectEl) streamTypeSelectEl.value = String(st);
   } catch (e) {}
   liveCurrentOrigin = origin;
   liveCurrentChannel = channelId;
+  liveCurrentVideoDeviceId = videoDeviceId;
 
   try {
     const streamType = Number(streamTypeSelectEl?.value || 2) || 2;
     const realUrl = buildFlvUrlWithStreamType(flvUrl, streamType);
-    const probe = await probeStream(realUrl);
-    if (!probe.ok) {
-      setLiveStatus(`连接失败: ${probe.message}`);
-      liveOpening = false;
-      scheduleReconnect();
-      return;
-    }
+    livePreviewVideoEl.autoplay = true;
+    livePreviewVideoEl.muted = true;
+    livePreviewVideoEl.playsInline = true;
+    livePreviewVideoEl.setAttribute('playsinline', '');
     liveFlvPlayer = window.flvjs.createPlayer(
-      { type: 'flv', url: String(realUrl), isLive: true, hasAudio: true },
+      { type: 'flv', url: String(realUrl), isLive: true, hasAudio: false, hasVideo: true, cors: true },
       { enableWorker: false, enableStashBuffer: false, stashInitialSize: 0, isLive: true, autoCleanupSourceBuffer: true, autoCleanupMaxBackwardDuration: 30, autoCleanupMinBackwardDuration: 15 }
     );
     liveFlvPlayer.attachMediaElement(livePreviewVideoEl);
     liveFlvPlayer.load();
-    livePreviewVideoEl.muted = true;
     updateMuteButton();
-    const p = livePreviewVideoEl.play();
+    const p = liveFlvPlayer.play?.();
     if (p && typeof p.catch === 'function') p.catch(() => {});
     setLiveStatus('缓冲中...');
     startMetrics();
+    if (window.flvjs?.Events?.METADATA_ARRIVED) {
+      liveFlvPlayer.on(window.flvjs.Events.METADATA_ARRIVED, () => {
+        liveOpening = false;
+        setLiveStatus('播放中');
+      });
+    }
+    if (window.flvjs?.Events?.LOADING_COMPLETE) {
+      liveFlvPlayer.on(window.flvjs.Events.LOADING_COMPLETE, () => {
+        if (livePreviewVideoEl?.readyState < 2) {
+          liveOpening = false;
+          scheduleReconnect({ force: true });
+        }
+      });
+    }
     if (window.flvjs?.Events?.ERROR) {
       liveErrorHandler = (_type, detail, info) => {
         const parts = [];
@@ -307,7 +320,7 @@ async function openLivePreview({ title, flvUrl, channelId, isReconnect } = {}) {
         const extraMsg = parts.length ? ` (${parts.join(' ')})` : '';
         setLiveStatus(`播放器错误${extraMsg}`);
         liveOpening = false;
-        scheduleReconnect();
+        scheduleReconnect({ force: true });
       };
       liveFlvPlayer.on(window.flvjs.Events.ERROR, liveErrorHandler);
     }
@@ -317,8 +330,14 @@ async function openLivePreview({ title, flvUrl, channelId, isReconnect } = {}) {
         setLiveStatus('播放中');
       },
       onWaiting: () => setLiveStatus('缓冲中...'),
-      onStalled: () => scheduleReconnect(),
-      onError: () => scheduleReconnect()
+      onStalled: () => {
+        liveOpening = false;
+        scheduleReconnect({ force: true });
+      },
+      onError: () => {
+        liveOpening = false;
+        scheduleReconnect({ force: true });
+      }
     };
     livePreviewVideoEl.addEventListener('playing', liveVideoHandlers.onPlaying);
     livePreviewVideoEl.addEventListener('waiting', liveVideoHandlers.onWaiting);
@@ -333,23 +352,13 @@ async function openLivePreview({ title, flvUrl, channelId, isReconnect } = {}) {
       const b = livePreviewVideoEl.buffered;
       const hasBuf = b && b.length > 0;
       if (livePreviewVideoEl.readyState < 2 && !hasBuf) {
-        scheduleReconnect();
+        scheduleReconnect({ force: true });
       }
     }, 1000);
   } catch (e) {
     setLiveStatus(`播放失败: ${e?.message || String(e)}`);
     liveOpening = false;
-    scheduleReconnect();
-  }
-}
-
-function readExtraJson() {
-  const raw = String(videoExtraInputEl?.value || '').trim();
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch (e) {
-    return { _raw: raw };
+    scheduleReconnect({ force: true });
   }
 }
 
@@ -359,7 +368,6 @@ function applyForm(device) {
   if (videoIpInputEl) videoIpInputEl.value = String(d.base_url || '');
   if (videoUserInputEl) videoUserInputEl.value = String(d.username || '');
   if (videoPassInputEl) videoPassInputEl.value = String(d.password || '');
-  let extraText = '';
   let extraObj = {};
   try {
     extraObj = d.extra_json ? JSON.parse(String(d.extra_json)) : {};
@@ -390,21 +398,6 @@ function applyForm(device) {
       videoRtspPortInputEl.value = String(rtspPort);
     }
   }
-  if (extraObj && Object.prototype.hasOwnProperty.call(extraObj, 'httpPort')) {
-    delete extraObj.httpPort;
-  }
-  if (extraObj && Object.prototype.hasOwnProperty.call(extraObj, 'sdkPort')) {
-    delete extraObj.sdkPort;
-  }
-  if (extraObj && Object.prototype.hasOwnProperty.call(extraObj, 'rtspPort')) {
-    delete extraObj.rtspPort;
-  }
-  try {
-    extraText = Object.keys(extraObj).length ? JSON.stringify(extraObj, null, 2) : '';
-  } catch (e) {
-    extraText = '';
-  }
-  if (videoExtraInputEl) videoExtraInputEl.value = extraText;
 }
 
 async function loadVideoDevices() {
@@ -430,6 +423,14 @@ function renderVideoDevices() {
 
   videoDevices.forEach((d) => {
     const row = document.createElement('tr');
+    if (Number.isFinite(currentId) && Number(d.id) === Number(currentId)) {
+      row.classList.add('row-selected');
+    }
+    row.addEventListener('click', () => {
+      currentId = Number(d.id);
+      applyForm(d);
+      renderVideoDevices();
+    });
 
     const nameCell = document.createElement('td');
     nameCell.textContent = d.name || '--';
@@ -456,6 +457,7 @@ function renderVideoDevices() {
     const enabledInput = document.createElement('input');
     enabledInput.type = 'checkbox';
     enabledInput.checked = Boolean(d.enabled);
+    enabledInput.addEventListener('click', (e) => e.stopPropagation());
     enabledInput.addEventListener('change', async () => {
       const res = await window.api.updateVideoDevice({
         id: d.id,
@@ -469,17 +471,20 @@ function renderVideoDevices() {
     const actionCell = document.createElement('td');
     const editBtn = document.createElement('button');
     editBtn.className = 'mini-btn';
-    editBtn.textContent = '编辑';
-    editBtn.addEventListener('click', () => {
+    editBtn.textContent = '选择';
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       currentId = Number(d.id);
       applyForm(d);
+      renderVideoDevices();
     });
     actionCell.appendChild(editBtn);
 
     const delBtn = document.createElement('button');
     delBtn.className = 'action-btn';
     delBtn.textContent = '删除';
-    delBtn.addEventListener('click', async () => {
+    delBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
       const ok = window.confirm(`确定删除录像设备 ${d.name} 吗？`);
       if (!ok) return;
       const res = await window.api.deleteVideoDevice(d.id);
@@ -530,43 +535,47 @@ saveBtnEl?.addEventListener('click', async () => {
     return;
   }
   const ip = String(videoIpInputEl?.value || '').trim();
+  if (!ip) {
+    showToast('设备IP地址必填');
+    return;
+  }
+  const username = String(videoUserInputEl?.value || '').trim();
+  if (!username) {
+    showToast('登录账号必填');
+    return;
+  }
+  const password = String(videoPassInputEl?.value || '');
+  if (!String(password).trim()) {
+    showToast('登录密码必填');
+    return;
+  }
   const httpPortRaw = String(videoHttpPortInputEl?.value || '').trim();
   const httpPortNum = Number(httpPortRaw);
   const sdkPortRaw = String(videoPortInputEl?.value || '').trim();
   const sdkPortNum = Number(sdkPortRaw);
   const rtspPortRaw = String(videoRtspPortInputEl?.value || '').trim();
   const rtspPortNum = Number(rtspPortRaw);
+  if (!httpPortRaw || !Number.isFinite(httpPortNum) || httpPortNum <= 0 || httpPortNum > 65535) {
+    showToast('HTTP端口必填(1-65535)');
+    return;
+  }
+  if (!sdkPortRaw || !Number.isFinite(sdkPortNum) || sdkPortNum <= 0 || sdkPortNum > 65535) {
+    showToast('SDK端口必填(1-65535)');
+    return;
+  }
+  if (!rtspPortRaw || !Number.isFinite(rtspPortNum) || rtspPortNum <= 0 || rtspPortNum > 65535) {
+    showToast('RTSP端口必填(1-65535)');
+    return;
+  }
+  const current = Number.isFinite(currentId) ? (videoDevices.find((v) => Number(v.id) === Number(currentId)) || null) : null;
+  const enabled = current ? (current.enabled ? 1 : 0) : 1;
   const payload = {
     name,
     base_url: ip,
-    username: String(videoUserInputEl?.value || '').trim(),
-    password: String(videoPassInputEl?.value || ''),
-    extra: (() => {
-      const extra = readExtraJson() || {};
-      if (httpPortRaw) {
-        if (Number.isFinite(httpPortNum)) {
-          extra.httpPort = httpPortNum;
-        } else {
-          extra.httpPort = httpPortRaw;
-        }
-      }
-      if (sdkPortRaw) {
-        if (Number.isFinite(sdkPortNum)) {
-          extra.sdkPort = sdkPortNum;
-        } else {
-          extra.sdkPort = sdkPortRaw;
-        }
-      }
-      if (rtspPortRaw) {
-        if (Number.isFinite(rtspPortNum)) {
-          extra.rtspPort = rtspPortNum;
-        } else {
-          extra.rtspPort = rtspPortRaw;
-        }
-      }
-      return extra;
-    })(),
-    enabled: 1
+    username,
+    password,
+    extra: { httpPort: httpPortNum, sdkPort: sdkPortNum, rtspPort: rtspPortNum },
+    enabled
   };
 
   let res;
@@ -593,6 +602,42 @@ loadChannelsBtnEl?.addEventListener('click', async () => {
     if (channelListEl) channelListEl.textContent = '请先在上方表格中选择一个录像设备';
     return;
   }
+  const current = videoDevices.find((v) => Number(v.id) === Number(currentId)) || null;
+  if (current && !current.enabled) {
+    if (channelListEl) channelListEl.textContent = '录像设备已禁用';
+    showToast('录像设备已禁用');
+    return;
+  }
+  if (!String(videoIpInputEl?.value || '').trim()) {
+    showToast('设备IP地址必填');
+    return;
+  }
+  if (!String(videoUserInputEl?.value || '').trim()) {
+    showToast('登录账号必填');
+    return;
+  }
+  if (!String(videoPassInputEl?.value || '').trim()) {
+    showToast('登录密码必填');
+    return;
+  }
+  const httpPortRaw = String(videoHttpPortInputEl?.value || '').trim();
+  const httpPortNum = Number(httpPortRaw);
+  if (!httpPortRaw || !Number.isFinite(httpPortNum) || httpPortNum <= 0 || httpPortNum > 65535) {
+    showToast('HTTP端口必填(1-65535)');
+    return;
+  }
+  const sdkPortRaw = String(videoPortInputEl?.value || '').trim();
+  const sdkPortNum = Number(sdkPortRaw);
+  if (!sdkPortRaw || !Number.isFinite(sdkPortNum) || sdkPortNum <= 0 || sdkPortNum > 65535) {
+    showToast('SDK端口必填(1-65535)');
+    return;
+  }
+  const rtspPortRaw = String(videoRtspPortInputEl?.value || '').trim();
+  const rtspPortNum = Number(rtspPortRaw);
+  if (!rtspPortRaw || !Number.isFinite(rtspPortNum) || rtspPortNum <= 0 || rtspPortNum > 65535) {
+    showToast('RTSP端口必填(1-65535)');
+    return;
+  }
   if (channelListEl) channelListEl.textContent = '正在加载通道列表...';
   const res = await window.api.listVideoChannels(currentId);
   if (!res?.ok) {
@@ -609,6 +654,7 @@ loadChannelsBtnEl?.addEventListener('click', async () => {
     list.forEach((ch) => {
       const name = ch.name ? ` (${ch.name})` : '';
       const flv = ch.flv || '';
+      const statusText = ch?.online === true ? '在线' : ch?.online === false ? '离线' : '未知';
 
       const itemDiv = document.createElement('div');
       itemDiv.className = 'channel-item';
@@ -617,13 +663,18 @@ loadChannelsBtnEl?.addEventListener('click', async () => {
       infoDiv.className = 'channel-info';
       infoDiv.innerHTML = `
         <strong>通道ID: ${ch.id}${name}</strong>
-        <span style="font-size: 12px; color: #888;">HTTP-FLV: ${flv || 'N/A'}</span>
+        <span style="font-size: 12px; color: #888;">状态: ${statusText}</span>
       `;
 
       const btn = document.createElement('button');
       btn.className = 'mini-btn';
       btn.textContent = '实时预览';
+      if (ch?.online === false) btn.disabled = true;
       btn.addEventListener('click', async () => {
+        if (ch?.online === false) {
+          showToast('通道离线');
+          return;
+        }
         if (!flv) {
           showToast('该通道未返回 HTTP-FLV 地址');
           return;
@@ -631,7 +682,8 @@ loadChannelsBtnEl?.addEventListener('click', async () => {
         await openLivePreview({
           title: `通道 ${ch.id}${name}`,
           flvUrl: flv,
-          channelId: ch.id
+          channelId: ch.id,
+          videoDeviceId: currentId
         });
       });
 
@@ -654,8 +706,15 @@ livePreviewModalEl?.addEventListener('click', (e) => {
 closeLivePreviewBtnEl?.addEventListener('click', () => {
   stopLivePreview().then(() => livePreviewModalEl?.classList.add('hidden'));
 });
+startLivePreviewBtnEl?.addEventListener('click', () => {
+  if (!liveBaseFlvUrl || liveCurrentChannel == null) {
+    showToast('暂无可播放的实时流');
+    return;
+  }
+  openLivePreview({ title: livePreviewTitleEl?.textContent || '实时预览', flvUrl: liveBaseFlvUrl, channelId: liveCurrentChannel, videoDeviceId: liveCurrentVideoDeviceId });
+});
 stopLivePreviewBtnEl?.addEventListener('click', () => {
-  stopLivePreview();
+  stopLivePreview({ preserve: true });
 });
 
 toggleMuteBtnEl?.addEventListener('click', () => {
@@ -665,7 +724,7 @@ toggleMuteBtnEl?.addEventListener('click', () => {
 });
 streamTypeSelectEl?.addEventListener('change', () => {
   if (!liveBaseFlvUrl || liveCurrentChannel == null) return;
-  openLivePreview({ title: livePreviewTitleEl?.textContent || '实时预览', flvUrl: liveBaseFlvUrl, channelId: liveCurrentChannel });
+  openLivePreview({ title: livePreviewTitleEl?.textContent || '实时预览', flvUrl: liveBaseFlvUrl, channelId: liveCurrentChannel, videoDeviceId: liveCurrentVideoDeviceId });
 });
 fullscreenBtnEl?.addEventListener('click', () => {
   const el = livePreviewVideoEl;

@@ -98,6 +98,22 @@ function renderRecords(records) {
         }
       });
       videoCell.appendChild(openBtn);
+
+      const downloadBtn = document.createElement('button');
+      downloadBtn.className = 'mini-btn';
+      downloadBtn.style.marginLeft = '8px';
+      downloadBtn.textContent = '下载';
+      downloadBtn.addEventListener('click', async () => {
+        const res = await window.api.downloadVideo?.(record.id);
+        if (res?.ok) {
+          showToast(`已保存到: ${res.filePath}`);
+          return;
+        }
+        if (res?.message && res.message !== 'no video') {
+          showToast(`下载失败: ${res.message}`);
+        }
+      });
+      videoCell.appendChild(downloadBtn);
     } else if (record.video_status) {
       const s = String(record.video_status);
       const msg = record.video_message ? ` (${String(record.video_message)})` : '';

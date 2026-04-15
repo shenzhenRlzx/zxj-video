@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteVideoDevice: (id) => ipcRenderer.invoke('delete-video-device', { id }),
   listVideoChannels: (video_device_id) => ipcRenderer.invoke('list-video-channels', { video_device_id }),
   openVideo: (id) => ipcRenderer.invoke('open-video', { id }),
+  downloadVideo: (id) => ipcRenderer.invoke('download-video', { id }),
   openLivePreview: (params) => ipcRenderer.invoke('open-live-preview', params),
   getLogs: () => ipcRenderer.invoke('get-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),

@@ -85,6 +85,17 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     sendRuntimeInfoToRenderer();
   });
+  mainWindow.on('close', () => {
+    if (toastWindow && !toastWindow.isDestroyed()) {
+      try {
+        toastWindow.destroy();
+      } catch (e) { }
+    }
+    toastWindow = null;
+  });
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
 
   if (!app.isPackaged || process.env.ZXJ_DEBUG === '1') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
@@ -931,7 +942,7 @@ if (gotTheLock) app.whenReady().then(async () => {
 
 if (gotTheLock) {
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+    app.quit();
   });
 }
 
@@ -1072,6 +1083,11 @@ ipcMain.handle('list-video-channels', async (event, params) => {
     const channels = (Array.isArray(list) ? list : []).map((ch) => {
       const id = String(ch?.channel ?? ch?.id ?? '').trim();
       const name = String(ch?.name ?? '').trim();
+      const onLine = ch?.onLine;
+      const online =
+        typeof onLine === 'boolean'
+          ? onLine
+          : (typeof ch?.online === 'boolean' ? ch.online : (typeof ch?.on_line === 'boolean' ? ch.on_line : null));
       const rtsp = buildRtspUrl({
         ip: device.base_url,
         username: device.username,
@@ -1088,7 +1104,7 @@ ipcMain.handle('list-video-channels', async (event, params) => {
       flvUrl.searchParams.set('password', String(device.password || ''));
       flvUrl.searchParams.set('rtspPort', String(rtspPort || ''));
       flvUrl.searchParams.set('streamType', '2');
-      return { id, name, rtsp, flv: flvUrl.toString() };
+      return { id, name, online, rtsp, flv: flvUrl.toString() };
     });
     return { ok: true, channels };
   } catch (e) {
@@ -1146,6 +1162,103 @@ ipcMain.handle('open-video', (event, { id }) => {
     shell.openPath(String(videoPath));
   }
   return { ok: true };
+});
+
+function guessFileNameFromVideo(record, videoPath) {
+  const barcode = String(record?.barcode || '').trim();
+  const base = barcode || `video-${Number(record?.id) || Date.now()}`;
+  let ext = '.mp4';
+  const raw = String(videoPath || '');
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const p = u.pathname || '';
+      const m = p.match(/\.([a-zA-Z0-9]{1,6})$/);
+      if (m) ext = `.${m[1].toLowerCase()}`;
+    } catch (e) {}
+  } else {
+    const p = path.extname(raw);
+    if (p) ext = p;
+  }
+  return `${base}${ext}`;
+}
+
+function downloadUrlToFile(urlString, destPath) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(String(urlString));
+    } catch (e) {
+      reject(new Error('invalid url'));
+      return;
+    }
+    const lib = url.protocol === 'https:' ? https : http;
+    const req = lib.request(
+      {
+        method: 'GET',
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        timeout: 60_000
+      },
+      (res) => {
+        const code = Number(res.statusCode) || 0;
+        if ([301, 302, 303, 307, 308].includes(code) && res.headers.location) {
+          try {
+            const next = new URL(String(res.headers.location), url).toString();
+            res.resume();
+            downloadUrlToFile(next, destPath).then(resolve, reject);
+            return;
+          } catch (e) {}
+        }
+        if (code < 200 || code >= 300) {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            reject(new Error(`download failed: HTTP ${code} ${Buffer.concat(chunks).toString('utf8').slice(0, 200)}`));
+          });
+          return;
+        }
+        const out = fs.createWriteStream(destPath);
+        out.on('error', reject);
+        res.on('error', reject);
+        out.on('finish', () => resolve());
+        res.pipe(out);
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+ipcMain.handle('download-video', async (event, { id }) => {
+  const safeId = Number(id);
+  if (!Number.isFinite(safeId)) return { ok: false, message: 'invalid id' };
+  const record = db.getRecordById(safeId);
+  const videoPath = record?.video_path;
+  if (!videoPath) return { ok: false, message: 'no video' };
+
+  const defaultName = guessFileNameFromVideo(record, videoPath);
+  const { canceled, filePath } = await dialog.showSaveDialog({
+    title: '保存视频',
+    defaultPath: defaultName,
+    filters: [{ name: 'Video', extensions: ['mp4', 'mov', 'mkv', 'avi', 'flv'] }]
+  });
+  if (canceled || !filePath) return { ok: false };
+
+  const raw = String(videoPath || '');
+  try {
+    if (/^https?:\/\//i.test(raw)) {
+      await downloadUrlToFile(raw, filePath);
+      return { ok: true, filePath };
+    }
+    const src = raw;
+    if (!fs.existsSync(src)) return { ok: false, message: 'source file not found' };
+    await fs.promises.copyFile(src, filePath);
+    return { ok: true, filePath };
+  } catch (e) {
+    return { ok: false, message: e?.message || String(e) };
+  }
 });
 
 ipcMain.handle('open-live-preview', (event, params) => {
