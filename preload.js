@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('api', {
   onBarcode: (callback) => {
     ipcRenderer.on('barcode', (_event, data) => callback(data));
   },
+  onRecordVideoUpdated: (callback) => {
+    ipcRenderer.on('record-video-updated', (_event, data) => callback(data));
+  },
   queryRecords: (params) => ipcRenderer.invoke('query-records', params),
   onScannersStatus: (callback) => {
     ipcRenderer.on('scanners-status', (_event, data) => callback(data));
@@ -19,5 +22,19 @@ contextBridge.exposeInMainWorld('api', {
   disconnectAllDevices: () => ipcRenderer.invoke('disconnect-all-devices'),
   exportCSV: (records) => ipcRenderer.invoke('export-csv', records),
   simulateScan: (barcode) => ipcRenderer.invoke('simulate-scan', { barcode }),
-  deleteRecord: (id) => ipcRenderer.invoke('delete-record', { id })
+  deleteRecord: (id) => ipcRenderer.invoke('delete-record', { id }),
+  getVideoConfig: () => ipcRenderer.invoke('get-video-config'),
+  setVideoConfig: (config) => ipcRenderer.invoke('set-video-config', config),
+  listVideoDevices: () => ipcRenderer.invoke('list-video-devices'),
+  addVideoDevice: (device) => ipcRenderer.invoke('add-video-device', device),
+  updateVideoDevice: (device) => ipcRenderer.invoke('update-video-device', device),
+  deleteVideoDevice: (id) => ipcRenderer.invoke('delete-video-device', { id }),
+  listVideoChannels: (video_device_id) => ipcRenderer.invoke('list-video-channels', { video_device_id }),
+  openVideo: (id) => ipcRenderer.invoke('open-video', { id }),
+  openLivePreview: (params) => ipcRenderer.invoke('open-live-preview', params),
+  getLogs: () => ipcRenderer.invoke('get-logs'),
+  clearLogs: () => ipcRenderer.invoke('clear-logs'),
+  onLogEntry: (callback) => {
+    ipcRenderer.on('log-entry', (_event, data) => callback(data));
+  }
 });

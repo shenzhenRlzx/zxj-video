@@ -7,9 +7,11 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "build:win": "electron-builder --win --x64"
+    "clean:win": "node -e \"require('fs').rmSync('dist\\\\win-unpacked', { recursive: true, force: true });\"",
+    "build:win": "npm run clean:win && set CSC_IDENTITY_AUTO_DISCOVERY=false&& set ELECTRON_BUILDER_CACHE=%CD%\\dist\\.electron-builder-cache&& electron-builder --win --x64"
   },
   "dependencies": {
+    "serialport": "^13.0.0",
     "sql.js": "^1.9.0"
   },
   "devDependencies": {
@@ -21,9 +23,11 @@
     "productName": "ZXJ Barcode Scanner",
     "files": [
       "main.js",
+      "hikvision.js",
       "preload.js",
       "toast-preload.js",
       "database.js",
+      "utils.js",
       "renderer/**/*",
       "node_modules/**/*"
     ],

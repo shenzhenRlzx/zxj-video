@@ -1,17 +1,74 @@
-const { app, BrowserWindow, ipcMain, dialog, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, screen, Menu, globalShortcut } = require('electron');
 const net = require('net');
 const os = require('os');
 const path = require('path');
 const { Database } = require('./database');
 const fs = require('fs');
+const http = require('http');
+const https = require('https');
+const { SerialPort } = require('serialport');
+const { buildRtspUrl } = require('./hikvision');
+const util = require('util');
 
 let mainWindow;
 let toastWindow;
 let toastTimer;
 let db;
 
+const logEntries = [];
+let logSeq = 0;
+
+function addLog(level, message) {
+  const entry = {
+    id: ++logSeq,
+    ts: new Date().toISOString(),
+    level: String(level || 'info'),
+    message: String(message || '')
+  };
+  logEntries.push(entry);
+  if (logEntries.length > 1000) logEntries.splice(0, logEntries.length - 1000);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('log-entry', entry);
+  }
+}
+
+const originalConsole = {
+  log: console.log.bind(console),
+  info: console.info ? console.info.bind(console) : console.log.bind(console),
+  warn: console.warn ? console.warn.bind(console) : console.log.bind(console),
+  error: console.error ? console.error.bind(console) : console.log.bind(console)
+};
+
+console.log = (...args) => {
+  addLog('info', util.format(...args));
+  originalConsole.log(...args);
+};
+console.info = (...args) => {
+  addLog('info', util.format(...args));
+  originalConsole.info(...args);
+};
+console.warn = (...args) => {
+  addLog('warn', util.format(...args));
+  originalConsole.warn(...args);
+};
+console.error = (...args) => {
+  addLog('error', util.format(...args));
+  originalConsole.error(...args);
+};
+
 const DEFAULT_SCANNER_HOST = String(process.env.SCAN_DEVICE_HOST || '').trim();
-const DEFAULT_SCANNER_PORT = Number(process.env.SCAN_DEVICE_PORT) || 33333;
+const DEFAULT_SCANNER_PORT = Number(process.env.SCAN_DEVICE_PORT) || 2006;
+
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -28,6 +85,34 @@ function createWindow() {
   mainWindow.webContents.on('did-finish-load', () => {
     sendRuntimeInfoToRenderer();
   });
+
+  if (!app.isPackaged || process.env.ZXJ_DEBUG === '1') {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
+}
+
+function toggleDevTools() {
+  const win = BrowserWindow.getFocusedWindow() || mainWindow;
+  if (!win || win.isDestroyed()) return;
+  if (win.webContents.isDevToolsOpened()) {
+    win.webContents.closeDevTools();
+  } else {
+    win.webContents.openDevTools({ mode: 'detach' });
+  }
+}
+
+function setupAppMenu() {
+  const template = [
+    {
+      label: '查看',
+      submenu: [
+        { label: '刷新', accelerator: 'F5', click: () => (BrowserWindow.getFocusedWindow() || mainWindow)?.reload() },
+        { type: 'separator' },
+        { label: '开发者工具', accelerator: 'F12', click: () => toggleDevTools() }
+      ]
+    }
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function ensureToastWindow() {
@@ -77,6 +162,12 @@ function showToast(message) {
   }, 1800);
 }
 
+function notifyRecordVideoUpdated(recordId) {
+  if (!Number.isFinite(Number(recordId))) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('record-video-updated', { id: Number(recordId) });
+}
+
 function handleScan(barcode, device) {
   const deviceId = device?.id ?? null;
   const record = db.insertRecord(barcode, deviceId);
@@ -86,6 +177,11 @@ function handleScan(barcode, device) {
   const deviceName = record.device_name || device?.name || null;
   const prefix = deviceName ? `${deviceName} - ` : '';
   showToast(`${prefix}扫码成功: ${record.barcode}`);
+
+  if (device && device.channel_id) {
+    downloadVideo(device, record);
+  }
+
   return record;
 }
 
@@ -106,15 +202,469 @@ function getLocalIPv4Addresses() {
 function buildDeviceName(device) {
   const name = String(device?.name || '').trim();
   if (name) return name;
-  const host = String(device?.host || '').trim();
-  const port = Number(device?.port);
-  if (host && Number.isFinite(port)) return `${host}:${port}`;
-  return '未命名';
+  const type = String(device?.type || 'tcp');
+  const identifier = String(device?.identifier || '').trim();
+  return `${type.toUpperCase()}:${identifier}`;
 }
+
+function normalizeBarcode(text) {
+  const raw = String(text ?? '');
+  const cleaned = raw.replace(/[\x00-\x1F\x7F]/g, '').trim();
+  return cleaned;
+}
+
+function extractCompletedLines(buffer) {
+  const parts = String(buffer || '').split(/[\r\n\0]+/);
+  const rest = parts.pop() ?? '';
+  const barcodes = parts.map(normalizeBarcode).filter(Boolean);
+  return { barcodes, rest };
+}
+
+function flushBufferedBarcode(entry) {
+  if (!entry) return;
+  const barcode = normalizeBarcode(entry.buffer);
+  if (!barcode) return;
+  entry.buffer = '';
+  console.log(`[SCAN] ${buildDeviceName(entry.device)} => ${barcode}`);
+  handleScan(barcode, {
+    id: entry.device.id,
+    name: buildDeviceName(entry.device),
+    video_device_id: entry.device.video_device_id,
+    channel_id: entry.device.channel_id
+  });
+}
+
+function scheduleFlush(entry) {
+  if (!entry) return;
+  if (entry.flushTimer) clearTimeout(entry.flushTimer);
+  entry.flushTimer = setTimeout(() => {
+    entry.flushTimer = null;
+    flushBufferedBarcode(entry);
+  }, 250);
+}
+
+function clearFlush(entry) {
+  if (!entry?.flushTimer) return;
+  clearTimeout(entry.flushTimer);
+  entry.flushTimer = null;
+}
+
+function getVideoBackendUrl() {
+  return 'http://127.0.0.1:8222';
+}
+
+function httpGetJson(urlString) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(urlString);
+    } catch (e) {
+      reject(new Error('invalid url'));
+      return;
+    }
+    const lib = url.protocol === 'https:' ? https : http;
+    const req = lib.request(
+      {
+        method: 'GET',
+        hostname: url.hostname,
+        port: url.port || (url.protocol === 'https:' ? 443 : 80),
+        path: url.pathname + url.search,
+        timeout: 20000
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode !== 200) {
+            reject(new Error(`backend request failed: ${res.statusCode} ${text}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(text));
+          } catch (e) {
+            reject(new Error('backend json parse failed'));
+          }
+        });
+      }
+    );
+    req.on('error', (err) => reject(err));
+    req.end();
+  });
+}
+
+function resolveBackendSavedPath(backendUrl, value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (/^[a-zA-Z]:\\/.test(raw) || raw.startsWith('\\\\')) return raw;
+  if (raw.startsWith('/')) {
+    try {
+      return new URL(raw, backendUrl).toString();
+    } catch (e) {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function normalizeVideoStatus(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const lower = s.toLowerCase();
+  if (s === '成功' || ['success', 'ok', 'done', 'completed', 'complete', 'true', '1'].includes(lower)) return '成功';
+  if (s === '失败' || ['fail', 'failed', 'error', 'false', '0'].includes(lower)) return '失败';
+  if (s === '等待' || ['waiting', 'pending', 'processing', 'running', 'queue', 'queued'].includes(lower)) return '等待';
+  return s;
+}
+
+const videoStatusPollers = new Map(); // recordId -> { timer, deadlineMs }
+
+function startVideoStatusPolling(recordId, backendUrl, endMs) {
+  const safeId = Number(recordId);
+  if (!Number.isFinite(safeId)) return;
+  if (videoStatusPollers.has(safeId)) return;
+
+  const now = Date.now();
+  const safeEndMs = Number(endMs);
+  const deadlineMs = Number.isFinite(safeEndMs)
+    ? Math.max(now + 60_000, safeEndMs + 120_000)
+    : now + 180_000;
+
+  const pollOnce = () => {
+    const current = videoStatusPollers.get(safeId);
+    if (!current) return;
+    if (Date.now() > deadlineMs) {
+      if (current.timer) clearTimeout(current.timer);
+      videoStatusPollers.delete(safeId);
+      return;
+    }
+    let url;
+    try {
+      url = new URL('/findByFree/status', backendUrl);
+      url.searchParams.set('id', String(safeId));
+    } catch (e) {
+      videoStatusPollers.delete(safeId);
+      return;
+    }
+
+    requestVideoInfoFromBackend(url.toString(), backendUrl)
+      .then((info) => {
+        const status = info?.status || (info?.path ? '成功' : '等待');
+        const backendId = info?.backendId ?? String(safeId);
+        const savedPathOrUrl = info?.path ?? null;
+
+        if (savedPathOrUrl) {
+          db.setRecordVideoInfo(safeId, { status: '成功', backendId, videoPath: savedPathOrUrl, message: info?.message ?? null });
+          notifyRecordVideoUpdated(safeId);
+          if (current.timer) clearTimeout(current.timer);
+          videoStatusPollers.delete(safeId);
+          return;
+        }
+
+        if (status === '失败') {
+          db.setRecordVideoInfo(safeId, { status: '失败', backendId, videoPath: null, message: info?.message ?? null });
+          notifyRecordVideoUpdated(safeId);
+          if (current.timer) clearTimeout(current.timer);
+          videoStatusPollers.delete(safeId);
+          return;
+        }
+
+        db.setRecordVideoInfo(safeId, { status: '等待', backendId, videoPath: null, message: info?.message ?? null });
+        notifyRecordVideoUpdated(safeId);
+
+        current.timer = setTimeout(pollOnce, 5000);
+      })
+      .catch(() => {
+        const entry = videoStatusPollers.get(safeId);
+        if (!entry) return;
+        entry.timer = setTimeout(pollOnce, 8000);
+      });
+  };
+
+  videoStatusPollers.set(safeId, { timer: null, deadlineMs });
+  pollOnce();
+}
+
+function requestVideoInfoFromBackend(urlString, backendUrl) {
+  return httpGetJson(urlString).then((obj) => {
+    // 兼容多种常见的 Java 后端返回格式 (直接返回对象, 或者包在 data 字段里)
+    let p = obj?.filePath || obj?.path || obj?.file;
+    let u = obj?.url || obj?.downloadUrl;
+    let backendId = obj?.id ?? obj?.taskId ?? obj?.jobId ?? obj?.recordId;
+    let status = obj?.status ?? obj?.state;
+    let message = obj?.message ?? obj?.msg;
+    
+    if (obj?.data) {
+      if (typeof obj.data === 'string') {
+        // 如果 data 直接是字符串，假设它就是路径或URL
+        p = p || obj.data;
+      } else {
+        // 如果 data 是对象
+        p = p || obj.data.filePath || obj.data.path || obj.data.file;
+        u = u || obj.data.url || obj.data.downloadUrl;
+        backendId = backendId ?? obj.data.id ?? obj.data.taskId ?? obj.data.jobId ?? obj.data.recordId;
+        status = status ?? obj.data.status ?? obj.data.state;
+        message = message ?? obj.data.message ?? obj.data.msg;
+      }
+    }
+
+    const resolved = resolveBackendSavedPath(backendUrl, u || p);
+    const normalizedStatus = normalizeVideoStatus(status);
+    if (!resolved && !normalizedStatus && backendId == null) {
+      console.error('[Video] 后端返回的 JSON 未包含有效的文件路径或 URL:', obj);
+      throw new Error('后端返回的 JSON 未包含有效的文件路径(filePath/path/data)或 URL(url/downloadUrl)');
+    }
+    return { path: resolved || null, backendId: backendId == null ? null : String(backendId), status: normalizedStatus, message: message == null ? null : String(message) };
+  });
+}
+
+// 触发海康录像下载
+function downloadVideo(scannerDevice, record) {
+  const barcode = String(record?.barcode || '');
+  const recordIdRaw = record?.id;
+  const recordId = recordIdRaw == null || recordIdRaw === '' ? null : Number(recordIdRaw);
+  const channelId = String(scannerDevice?.channel_id || '').trim();
+  const videoDeviceIdRaw = scannerDevice?.video_device_id;
+  const videoDeviceId =
+    videoDeviceIdRaw == null || videoDeviceIdRaw === '' ? null : Number(videoDeviceIdRaw);
+
+  if (!channelId) {
+    console.log(`[VideoDownload] 没有配置通道ID，跳过下载。条码: ${barcode}`);
+    return;
+  }
+  if (!Number.isFinite(videoDeviceId)) {
+    console.log(`[VideoDownload] 没有绑定录像设备，跳过下载。条码: ${barcode} 通道ID: ${channelId}`);
+    return;
+  }
+
+  const videoDevice = db.getVideoDeviceById(videoDeviceId);
+  if (!videoDevice) {
+    console.log(`[VideoDownload] 找不到录像设备配置(id=${videoDeviceId})，跳过下载。条码: ${barcode} 通道ID: ${channelId}`);
+    return;
+  }
+
+  const startTime = new Date();
+  startTime.setSeconds(startTime.getSeconds() - 5); // 提前5秒
+  const endTime = new Date(startTime.getTime() + 30 * 1000); // 默认30秒
+
+  const formatTime = (d) => d.toISOString().replace('T', ' ').substring(0, 19);
+
+  let extra = null;
+  try {
+    extra = videoDevice.extra_json ? JSON.parse(String(videoDevice.extra_json)) : null;
+  } catch (e) {
+    extra = null;
+  }
+
+  let sdkPort = null;
+  let rtspPort = null;
+  let streamType = null;
+  if (extra && Object.prototype.hasOwnProperty.call(extra, 'sdkPort')) {
+    const p = extra.sdkPort;
+    const n = Number(p);
+    sdkPort = Number.isFinite(n) ? n : p;
+  }
+  if (extra && Object.prototype.hasOwnProperty.call(extra, 'rtspPort')) {
+    const p = extra.rtspPort;
+    const n = Number(p);
+    rtspPort = Number.isFinite(n) ? n : p;
+  } else {
+    rtspPort = 554;
+  }
+  if (extra && Object.prototype.hasOwnProperty.call(extra, 'streamType')) {
+    const n = Number(extra.streamType);
+    streamType = Number.isFinite(n) ? n : extra.streamType;
+  } else {
+    streamType = 1;
+  }
+  if (sdkPort == null || sdkPort === '') {
+    sdkPort = 8000;
+  }
+
+  const payload = {
+    expressNo: barcode,
+    status: '已扫描',
+    channelId,
+    startTime: formatTime(startTime),
+    endTime: formatTime(endTime),
+    videoDevice: {
+      id: videoDevice.id,
+      name: videoDevice.name,
+      baseUrl: videoDevice.base_url,
+      username: videoDevice.username
+    },
+    extra
+  };
+
+  console.log(`[VideoDownload] 触发录像下载:`);
+  console.log(JSON.stringify(payload, null, 2));
+
+  try {
+    const backendUrl = getVideoBackendUrl();
+    const url = new URL('/findByFree', backendUrl);
+    if (Number.isFinite(recordId)) {
+      db.setRecordVideoInfo(recordId, { status: '等待', backendId: null, videoPath: null, message: null });
+      notifyRecordVideoUpdated(recordId);
+      url.searchParams.set('id', String(recordId));
+    }
+    url.searchParams.set('c', channelId);
+    url.searchParams.set('expressNo', barcode);
+    url.searchParams.set('s', String(startTime.getTime()));
+    url.searchParams.set('e', String(endTime.getTime()));
+    url.searchParams.set('ip', String(videoDevice.base_url || ''));
+    url.searchParams.set('port', String(sdkPort || ''));
+    url.searchParams.set('username', String(videoDevice.username || ''));
+    url.searchParams.set('password', String(videoDevice.password || ''));
+    url.searchParams.set('rtspPort', String(rtspPort || ''));
+    url.searchParams.set('streamType', String(streamType || ''));
+
+    requestVideoInfoFromBackend(url.toString(), backendUrl)
+      .then((info) => {
+        const status = info?.status || (info?.path ? '成功' : '等待');
+        const backendId = info?.backendId ?? null;
+        const savedPathOrUrl = info?.path ?? null;
+
+        if (savedPathOrUrl) console.log(`[VideoDownload] 后端已生成: ${savedPathOrUrl}`);
+        if (Number.isFinite(recordId)) {
+          if (savedPathOrUrl) {
+            db.setRecordVideoInfo(recordId, { status: '成功', backendId, videoPath: savedPathOrUrl, message: info?.message ?? null });
+          } else {
+            db.setRecordVideoInfo(recordId, { status: status === '失败' ? '失败' : '等待', backendId, videoPath: null, message: info?.message ?? null });
+          }
+          notifyRecordVideoUpdated(recordId);
+        }
+
+        if (savedPathOrUrl) {
+          showToast(`录像下载完成: ${barcode}`);
+        } else if (status === '失败') {
+          showToast(`录像下载失败: ${barcode}`);
+        } else {
+          showToast(`录像下载任务已提交: ${barcode}`);
+          if (Number.isFinite(recordId)) startVideoStatusPolling(recordId, backendUrl, endTime.getTime());
+        }
+      })
+      .catch((err) => {
+        console.log(`[VideoDownload] 下载失败: ${err.message || err}`);
+        if (Number.isFinite(recordId)) {
+          db.setRecordVideoInfo(recordId, { status: '失败', backendId: null, videoPath: null, message: err?.message || String(err) });
+          notifyRecordVideoUpdated(recordId);
+        }
+        showToast(`录像下载失败: ${barcode}`);
+      });
+  } catch (e) {
+    console.log(`[VideoDownload] 调用下载出错: ${e.message || e}`);
+  }
+}
+
+const { cleanIp } = require('./utils');
 
 class ScannerManager {
   constructor() {
     this.devices = new Map();
+    this.tcpServer = null;
+    this.tcpClients = new Map(); // ip -> socket
+    this.tcpServerPort = DEFAULT_SCANNER_PORT;
+    this.startTcpServer();
+  }
+
+  stopTcpServer() {
+    if (!this.tcpServer) return;
+    try {
+      this.tcpServer.close();
+    } catch (e) { }
+    this.tcpServer = null;
+  }
+
+  startTcpServer() {
+    if (this.tcpServer) return;
+    this.tcpServer = net.createServer((socket) => {
+      const ip = cleanIp(socket.remoteAddress);
+      const remotePort = Number(socket.remotePort);
+
+      // 查找对应的已启用TCP设备
+      let matchedDeviceEntry = null;
+      for (const entry of this.devices.values()) {
+        const d = entry.device;
+        if (d.enabled && String(d.type || '').toLowerCase() === 'tcp' && String(d.identifier || '').trim() === ip) {
+          matchedDeviceEntry = entry;
+          break;
+        }
+      }
+
+      if (!matchedDeviceEntry) {
+        // 未知设备，可能记录日志或直接断开
+        console.log(`[TCP Server] 收到未知设备连接: ${ip}，断开。`);
+        socket.destroy();
+        return;
+      }
+
+      const id = matchedDeviceEntry.device.id;
+      const prevSocket = this.tcpClients.get(ip);
+      if (prevSocket && !prevSocket.destroyed) {
+        prevSocket.destroy();
+      }
+      this.tcpClients.set(ip, socket);
+
+      socket.setEncoding('utf8');
+      matchedDeviceEntry.buffer = '';
+      matchedDeviceEntry.client = {
+        ip,
+        port: Number.isFinite(remotePort) ? remotePort : null,
+        connected_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString()
+      };
+      this.setState(id, { state: 'connected', lastError: null });
+      showToast(`已连接: ${buildDeviceName(matchedDeviceEntry.device)}`);
+
+      socket.on('data', (chunk) => {
+        const e = this.devices.get(id);
+        if (!e || !this.tcpClients.has(ip)) return;
+        if (e.client) e.client.last_seen_at = new Date().toISOString();
+        e.buffer += String(chunk || '');
+        if (e.buffer.length > 8192) e.buffer = e.buffer.slice(-8192);
+
+        const extracted = extractCompletedLines(e.buffer);
+        e.buffer = extracted.rest;
+        for (const barcode of extracted.barcodes) {
+          console.log(`[SCAN] ${buildDeviceName(e.device)} => ${barcode}`);
+          handleScan(barcode, { id: e.device.id, name: buildDeviceName(e.device), video_device_id: e.device.video_device_id, channel_id: e.device.channel_id });
+        }
+        scheduleFlush(e);
+      });
+
+      socket.on('error', (err) => {
+        const e = this.devices.get(id);
+        if (e) this.setState(id, { state: 'error', lastError: String(err?.message || err) });
+      });
+
+      socket.on('close', () => {
+        if (this.tcpClients.get(ip) === socket) {
+          this.tcpClients.delete(ip);
+        }
+        const e = this.devices.get(id);
+        if (e) {
+          clearFlush(e);
+          e.client = null;
+          this.setState(id, { state: 'disconnected' });
+        }
+      });
+    });
+
+    this.tcpServer.on('error', (err) => {
+      console.error(`[TCP Server] 错误: ${err.message}`);
+      setTimeout(() => {
+        if (this.tcpServer) {
+          this.tcpServer.close();
+          this.tcpServer = null;
+          this.startTcpServer();
+        }
+      }, 5000);
+    });
+
+    this.tcpServer.listen(this.tcpServerPort, '0.0.0.0', () => {
+      console.log(`[TCP Server] 监听端口 ${this.tcpServerPort}`);
+    });
   }
 
   setDevices(devices) {
@@ -126,8 +676,10 @@ class ScannerManager {
       const cfg = {
         id,
         name: d?.name ?? null,
-        host: String(d?.host || '').trim(),
-        port: Number(d?.port),
+        type: String(d?.type || 'tcp').toLowerCase(),
+        identifier: String(d?.identifier || '').trim(),
+        video_device_id: d?.video_device_id ?? null,
+        channel_id: String(d?.channel_id || '').trim(),
         enabled: d?.enabled ? 1 : 0
       };
       if (existing) {
@@ -138,8 +690,10 @@ class ScannerManager {
           device: cfg,
           state: 'disconnected',
           lastError: null,
-          socket: null,
+          serialPort: null,
+          client: null,
           buffer: '',
+          flushTimer: null,
           reconnectTimer: null,
           reconnectDelayMs: 800,
           shouldReconnect: false
@@ -167,11 +721,14 @@ class ScannerManager {
       list.push({
         id: d.id,
         name: buildDeviceName(d),
-        host: d.host,
-        port: d.port,
+        type: d.type,
+        identifier: d.identifier,
+        video_device_id: d.video_device_id,
+        channel_id: d.channel_id,
         enabled: d.enabled,
         state: entry.state,
-        lastError: entry.lastError
+        lastError: entry.lastError,
+        client: entry.client
       });
     }
     list.sort((a, b) => Number(b.enabled) - Number(a.enabled) || Number(a.id) - Number(b.id));
@@ -179,7 +736,7 @@ class ScannerManager {
   }
 
   getRuntimeInfo() {
-    return { localIps: this.getLocalIps(), devices: this.getStatuses() };
+    return { localIps: this.getLocalIps(), devices: this.getStatuses(), tcpListenPort: this.tcpServerPort };
   }
 
   broadcast() {
@@ -216,71 +773,98 @@ class ScannerManager {
 
   destroySocket(id) {
     const entry = this.devices.get(id);
-    if (!entry || !entry.socket) return;
-    const s = entry.socket;
-    entry.socket = null;
-    try {
-      s.removeAllListeners();
-      s.destroy();
-    } catch (e) {}
+    if (!entry) return;
+    clearFlush(entry);
+    if (entry.device.type === 'usb' && entry.serialPort) {
+      const sp = entry.serialPort;
+      entry.serialPort = null;
+      if (sp.isOpen) sp.close();
+    } else if (entry.device.type === 'tcp') {
+      const ip = entry.device.identifier;
+      const socket = this.tcpClients.get(ip);
+      if (socket && !socket.destroyed) {
+        socket.destroy();
+      }
+      this.tcpClients.delete(ip);
+    }
   }
 
   connect(id) {
     const entry = this.devices.get(id);
     if (!entry) return { ok: false, message: 'not found' };
     const d = entry.device;
-    const host = String(d.host || '').trim();
-    const port = Number(d.port);
-    if (!host) return { ok: false, message: 'empty host' };
-    if (!Number.isFinite(port) || port <= 0 || port > 65535) return { ok: false, message: 'invalid port' };
+    const identifier = String(d.identifier || '').trim();
+    if (!identifier) return { ok: false, message: 'empty identifier' };
 
     entry.shouldReconnect = true;
     entry.reconnectDelayMs = 800;
     this.clearReconnectTimer(id);
     this.destroySocket(id);
     entry.buffer = '';
+    clearFlush(entry);
 
     this.setState(id, { state: 'connecting', lastError: null });
 
-    const socket = net.createConnection({ host, port });
-    entry.socket = socket;
-    socket.setEncoding('utf8');
+    if (d.type === 'usb') {
+      const sp = new SerialPort({ path: identifier, baudRate: 9600 }, (err) => {
+        if (err) {
+          const e = this.devices.get(id);
+          if (e) this.setState(id, { state: 'error', lastError: String(err.message) });
+        }
+      });
+      entry.serialPort = sp;
 
-    socket.on('connect', () => {
-      const e = this.devices.get(id);
-      if (!e || e.socket !== socket) return;
-      this.setState(id, { state: 'connected', lastError: null });
-      showToast(`已连接: ${buildDeviceName(d)}`);
-    });
+      sp.on('open', () => {
+        const e = this.devices.get(id);
+        if (!e || e.serialPort !== sp) return;
+        e.client = {
+          port: identifier,
+          connected_at: new Date().toISOString(),
+          last_seen_at: new Date().toISOString()
+        };
+        this.setState(id, { state: 'connected', lastError: null });
+        showToast(`已连接: ${buildDeviceName(d)}`);
+      });
 
-    socket.on('data', (chunk) => {
-      const e = this.devices.get(id);
-      if (!e || e.socket !== socket) return;
-      e.buffer += String(chunk || '');
-      if (e.buffer.length > 8192) e.buffer = e.buffer.slice(-8192);
+      sp.on('data', (chunk) => {
+        const e = this.devices.get(id);
+        if (!e || e.serialPort !== sp) return;
+        if (e.client) e.client.last_seen_at = new Date().toISOString();
+        e.buffer += String(chunk || '');
+        if (e.buffer.length > 8192) e.buffer = e.buffer.slice(-8192);
+        const extracted = extractCompletedLines(e.buffer);
+        e.buffer = extracted.rest;
+        for (const barcode of extracted.barcodes) {
+          console.log(`[SCAN] ${buildDeviceName(d)} => ${barcode}`);
+          handleScan(barcode, { id: d.id, name: buildDeviceName(d), video_device_id: d.video_device_id, channel_id: d.channel_id });
+        }
+        scheduleFlush(e);
+      });
 
-      const parts = e.buffer.split(/[\r\n]+/);
-      e.buffer = parts.pop() ?? '';
-      for (const part of parts) {
-        const barcode = String(part || '').trim();
-        if (!barcode) continue;
-        handleScan(barcode, { id: d.id, name: buildDeviceName(d) });
+      sp.on('error', (err) => {
+        const e = this.devices.get(id);
+        if (!e || e.serialPort !== sp) return;
+        this.setState(id, { state: 'error', lastError: String(err?.message || err) });
+      });
+
+      sp.on('close', () => {
+        const e = this.devices.get(id);
+        if (!e || e.serialPort !== sp) return;
+        entry.serialPort = null;
+        clearFlush(entry);
+        e.client = null;
+        this.setState(id, { state: 'disconnected' });
+        if (e.shouldReconnect) this.scheduleReconnect(id);
+      });
+    } else {
+      // TCP mode
+      const ip = d.identifier;
+      if (this.tcpClients.has(ip)) {
+        this.setState(id, { state: 'connected', lastError: null });
+      } else {
+        this.setState(id, { state: 'waiting_connection', lastError: null });
       }
-    });
-
-    socket.on('error', (err) => {
-      const e = this.devices.get(id);
-      if (!e || e.socket !== socket) return;
-      this.setState(id, { state: 'error', lastError: String(err?.message || err) });
-    });
-
-    socket.on('close', () => {
-      const e = this.devices.get(id);
-      if (!e || e.socket !== socket) return;
-      this.destroySocket(id);
-      this.setState(id, { state: 'disconnected' });
-      if (e.shouldReconnect) this.scheduleReconnect(id);
-    });
+    }
 
     return { ok: true };
   }
@@ -292,6 +876,8 @@ class ScannerManager {
     this.clearReconnectTimer(id);
     this.destroySocket(id);
     entry.buffer = '';
+    entry.client = null;
+    clearFlush(entry);
     this.setState(id, { state: 'disconnected', lastError: null });
     return { ok: true };
   }
@@ -312,20 +898,28 @@ class ScannerManager {
   }
 }
 
-const scannerManager = new ScannerManager();
+let scannerManager = null;
+if (gotTheLock) {
+  scannerManager = new ScannerManager();
+}
 
 function sendRuntimeInfoToRenderer() {
+  if (!scannerManager) return;
   scannerManager.broadcast();
 }
 
-app.whenReady().then(async () => {
+if (gotTheLock) app.whenReady().then(async () => {
   db = new Database(app);
   await db.init();
+
+  setupAppMenu();
+  globalShortcut.register('F12', toggleDevTools);
+  globalShortcut.register('CommandOrControl+Shift+I', toggleDevTools);
 
   createWindow();
   const devices = db.listDevices();
   if (!devices.length && DEFAULT_SCANNER_HOST) {
-    db.addDevice({ name: null, host: DEFAULT_SCANNER_HOST, port: DEFAULT_SCANNER_PORT, enabled: 1 });
+    db.addDevice({ name: null, type: 'tcp', identifier: DEFAULT_SCANNER_HOST, channel_id: '', host: DEFAULT_SCANNER_HOST, port: DEFAULT_SCANNER_PORT, enabled: 1 });
   }
   scannerManager.setDevices(db.listDevices());
   scannerManager.connectEnabled();
@@ -335,13 +929,23 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+if (gotTheLock) {
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+}
 
-app.on('before-quit', () => {
-  scannerManager.disconnectAll();
-});
+if (gotTheLock) {
+  app.on('will-quit', () => {
+    globalShortcut.unregisterAll();
+  });
+
+  app.on('before-quit', () => {
+    if (!scannerManager) return;
+    scannerManager.disconnectAll();
+    scannerManager.stopTcpServer();
+  });
+}
 
 ipcMain.handle('query-records', (event, params) => {
   const records = db.queryRecords(params || {});
@@ -351,6 +955,15 @@ ipcMain.handle('query-records', (event, params) => {
 
 ipcMain.handle('get-runtime-info', () => {
   return scannerManager.getRuntimeInfo();
+});
+
+ipcMain.handle('get-logs', () => {
+  return { ok: true, logs: logEntries.slice(-1000) };
+});
+
+ipcMain.handle('clear-logs', () => {
+  logEntries.length = 0;
+  return { ok: true };
 });
 
 ipcMain.handle('list-devices', () => {
@@ -411,6 +1024,96 @@ ipcMain.handle('disconnect-all-devices', () => {
   return { ...result, info: scannerManager.getRuntimeInfo() };
 });
 
+ipcMain.handle('list-video-devices', () => {
+  return db.listVideoDevices();
+});
+
+ipcMain.handle('add-video-device', (event, params) => {
+  return db.addVideoDevice(params || {});
+});
+
+ipcMain.handle('update-video-device', (event, params) => {
+  const safeId = Number(params?.id);
+  return db.updateVideoDevice(safeId, params || {});
+});
+
+ipcMain.handle('delete-video-device', (event, params) => {
+  const safeId = Number(params?.id);
+  return db.deleteVideoDevice(safeId);
+});
+
+ipcMain.handle('list-video-channels', async (event, params) => {
+  const safeId = Number(params?.video_device_id);
+  if (!Number.isFinite(safeId)) return { ok: false, message: 'invalid video_device_id' };
+  const device = db.getVideoDeviceById(safeId);
+  if (!device) return { ok: false, message: 'video device not found' };
+  try {
+    let sdkPort = 8000;
+    let rtspPort = 554;
+    if (device.extra_json) {
+      try {
+        const obj = JSON.parse(String(device.extra_json));
+        if (Object.prototype.hasOwnProperty.call(obj, 'sdkPort') && obj.sdkPort) {
+          sdkPort = obj.sdkPort;
+        }
+        if (Object.prototype.hasOwnProperty.call(obj, 'rtspPort') && obj.rtspPort) {
+          rtspPort = obj.rtspPort;
+        }
+      } catch (e) { }
+    }
+    const backendUrl = getVideoBackendUrl();
+    const url = new URL('/getChannelList', backendUrl);
+    url.searchParams.set('ip', String(device.base_url || ''));
+    url.searchParams.set('port', String(sdkPort || ''));
+    url.searchParams.set('username', String(device.username || ''));
+    url.searchParams.set('password', String(device.password || ''));
+    url.searchParams.set('rtspPort', String(rtspPort || ''));
+    const list = await httpGetJson(url.toString());
+    const channels = (Array.isArray(list) ? list : []).map((ch) => {
+      const id = String(ch?.channel ?? ch?.id ?? '').trim();
+      const name = String(ch?.name ?? '').trim();
+      const rtsp = buildRtspUrl({
+        ip: device.base_url,
+        username: device.username,
+        password: device.password,
+        channelId: id,
+        rtspPort,
+        streamType: 2
+      });
+      const flvUrl = new URL('/live/stream', backendUrl);
+      flvUrl.searchParams.set('channel', id);
+      flvUrl.searchParams.set('ip', String(device.base_url || ''));
+      flvUrl.searchParams.set('port', String(sdkPort || ''));
+      flvUrl.searchParams.set('username', String(device.username || ''));
+      flvUrl.searchParams.set('password', String(device.password || ''));
+      flvUrl.searchParams.set('rtspPort', String(rtspPort || ''));
+      flvUrl.searchParams.set('streamType', '2');
+      return { id, name, rtsp, flv: flvUrl.toString() };
+    });
+    return { ok: true, channels };
+  } catch (e) {
+    return { ok: false, message: e.message || String(e) };
+  }
+});
+
+ipcMain.handle('get-video-config', () => {
+  const raw = db.getSetting('video_config');
+  if (!raw) return { ok: true, config: null };
+  try {
+    const config = JSON.parse(String(raw));
+    return { ok: true, config };
+  } catch (e) {
+    return { ok: true, config: null };
+  }
+});
+
+ipcMain.handle('set-video-config', (event, config) => {
+  const safeConfig = config && typeof config === 'object' ? config : {};
+  const raw = JSON.stringify(safeConfig);
+  const result = db.setSetting('video_config', raw);
+  return result;
+});
+
 ipcMain.handle('simulate-scan', (event, { barcode }) => {
   const safeBarcode = String(barcode || '').trim();
   if (!safeBarcode) return { ok: false, message: 'empty barcode' };
@@ -425,6 +1128,82 @@ ipcMain.handle('delete-record', (event, { id }) => {
   return { ok: true };
 });
 
+ipcMain.handle('open-video', (event, { id }) => {
+  const safeId = Number(id);
+  if (!Number.isFinite(safeId)) return { ok: false, message: 'invalid id' };
+  const record = db.getRecordById(safeId);
+  const videoPath = record?.video_path;
+  if (!videoPath) return { ok: false, message: 'no video' };
+  let shell;
+  try {
+    shell = require('electron').shell;
+  } catch (e) {
+    return { ok: false, message: 'shell unavailable' };
+  }
+  if (/^https?:\/\//i.test(String(videoPath))) {
+    shell.openExternal(String(videoPath));
+  } else {
+    shell.openPath(String(videoPath));
+  }
+  return { ok: true };
+});
+
+ipcMain.handle('open-live-preview', (event, params) => {
+  const videoDeviceId = Number(params?.video_device_id);
+  const channelId = String(params?.channel_id || '').trim();
+  if (!Number.isFinite(videoDeviceId)) return { ok: false, message: 'invalid video_device_id' };
+  if (!channelId) return { ok: false, message: 'empty channel_id' };
+  const device = db.getVideoDeviceById(videoDeviceId);
+  if (!device) return { ok: false, message: 'video device not found' };
+  let rtspPort = 554;
+  let sdkPort = 8000;
+  let streamType = 2;
+  if (device.extra_json) {
+    try {
+      const extra = JSON.parse(String(device.extra_json));
+      if (extra && Object.prototype.hasOwnProperty.call(extra, 'rtspPort') && extra.rtspPort) {
+        const n = Number(extra.rtspPort);
+        rtspPort = Number.isFinite(n) ? n : rtspPort;
+      }
+      if (extra && Object.prototype.hasOwnProperty.call(extra, 'sdkPort') && extra.sdkPort) {
+        const n = Number(extra.sdkPort);
+        sdkPort = Number.isFinite(n) ? n : sdkPort;
+      }
+      if (extra && Object.prototype.hasOwnProperty.call(extra, 'streamType') && extra.streamType) {
+        const n = Number(extra.streamType);
+        streamType = Number.isFinite(n) ? n : streamType;
+      }
+    } catch (e) { }
+  }
+
+  const backendUrl = getVideoBackendUrl();
+  let pageUrl;
+  try {
+    pageUrl = new URL('/video/live', backendUrl);
+    pageUrl.searchParams.set('channel', channelId);
+    pageUrl.searchParams.set('ip', String(device.base_url || ''));
+    pageUrl.searchParams.set('port', String(sdkPort || ''));
+    pageUrl.searchParams.set('username', String(device.username || ''));
+    pageUrl.searchParams.set('password', String(device.password || ''));
+    pageUrl.searchParams.set('rtspPort', String(rtspPort || ''));
+    pageUrl.searchParams.set('streamType', String(streamType || ''));
+  } catch (e) {
+    return { ok: false, message: 'invalid backend url' };
+  }
+
+  const win = new BrowserWindow({
+    width: 1100,
+    height: 760,
+    title: `实时预览 - 通道 ${channelId}`,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+  win.loadURL(pageUrl.toString());
+  return { ok: true, url: pageUrl.toString() };
+});
+
 ipcMain.handle('export-csv', async (event, records) => {
   const { canceled, filePath } = await dialog.showSaveDialog({
     title: '导出CSV',
@@ -433,15 +1212,16 @@ ipcMain.handle('export-csv', async (event, records) => {
   });
   if (canceled || !filePath) return { ok: false };
 
-  const header = 'id,barcode,device_name,device_host,device_port,scanned_at';
+  const header = 'id,barcode,device_name,device_type,device_identifier,device_channel_id,scanned_at';
   const lines = records.map((r) => {
     const safe = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     return [
       safe(r.id),
       safe(r.barcode),
       safe(r.device_name),
-      safe(r.device_host),
-      safe(r.device_port),
+      safe(r.device_type),
+      safe(r.device_identifier),
+      safe(r.device_channel_id),
       safe(r.scanned_at)
     ].join(',');
   });

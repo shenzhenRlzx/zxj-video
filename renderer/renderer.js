@@ -19,6 +19,7 @@ const prevPageBtnEl = document.getElementById('prevPageBtn');
 const nextPageBtnEl = document.getElementById('nextPageBtn');
 const pageInfoEl = document.getElementById('pageInfo');
 const pageSizeSelectEl = document.getElementById('pageSizeSelect');
+const toastEl = document.getElementById('toast');
 
 let currentRecords = [];
 let audioCtx;
@@ -26,6 +27,17 @@ let pendingDeleteId = null;
 let currentPage = 1;
 let pageSize = 10;
 let totalRecords = 0;
+let toastTimer = null;
+
+function showToast(message) {
+  if (!toastEl) return;
+  toastEl.textContent = String(message || '');
+  toastEl.classList.remove('hidden');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.classList.add('hidden');
+  }, 2200);
+}
 
 function formatTime(raw) {
   return raw || '--';
@@ -50,6 +62,7 @@ function renderRecords(records) {
     return;
   }
 
+  const frag = document.createDocumentFragment();
   records.forEach((record, index) => {
     const row = document.createElement('tr');
 
@@ -63,12 +76,36 @@ function renderRecords(records) {
     row.appendChild(barcodeCell);
 
     const deviceCell = document.createElement('td');
-    deviceCell.textContent = record.device_name || record.device_host || '--';
+    const deviceName = record.device_name ? String(record.device_name) : '';
+    const deviceType = record.device_type ? String(record.device_type).toUpperCase() : 'TCP';
+    const deviceIdentifier = record.device_identifier ? String(record.device_identifier) : '';
+    deviceCell.textContent = deviceName || (deviceIdentifier ? `${deviceType}:${deviceIdentifier}` : '--');
     row.appendChild(deviceCell);
 
     const timeCell = document.createElement('td');
     timeCell.textContent = formatTime(record.scanned_at);
     row.appendChild(timeCell);
+
+    const videoCell = document.createElement('td');
+    if (record.video_path) {
+      const openBtn = document.createElement('button');
+      openBtn.className = 'mini-btn';
+      openBtn.textContent = '打开视频';
+      openBtn.addEventListener('click', async () => {
+        const res = await window.api.openVideo(record.id);
+        if (!res?.ok && res?.message !== 'no video') {
+          showToast(`打开视频失败: ${res?.message || 'unknown error'}`);
+        }
+      });
+      videoCell.appendChild(openBtn);
+    } else if (record.video_status) {
+      const s = String(record.video_status);
+      const msg = record.video_message ? ` (${String(record.video_message)})` : '';
+      videoCell.textContent = `${s}${msg}`;
+    } else {
+      videoCell.textContent = '--';
+    }
+    row.appendChild(videoCell);
 
     const actionCell = document.createElement('td');
     if (!record.deleted) {
@@ -82,8 +119,9 @@ function renderRecords(records) {
     }
     row.appendChild(actionCell);
 
-    recordsBodyEl.appendChild(row);
+    frag.appendChild(row);
   });
+  recordsBodyEl.appendChild(frag);
 }
 
 function renderPagination() {
@@ -125,7 +163,7 @@ function renderDeviceFilter(devices) {
   (devices || []).forEach((d) => {
     const opt = document.createElement('option');
     opt.value = String(d.id);
-    opt.textContent = d.name || `${d.host}:${d.port}`;
+    opt.textContent = d.name || `${(d.type || 'TCP').toUpperCase()}:${d.identifier}`;
     deviceFilterSelectEl.appendChild(opt);
   });
 
@@ -188,19 +226,19 @@ resetBtnEl.addEventListener('click', () => {
 });
 exportBtnEl.addEventListener('click', async () => {
   if (!currentRecords.length) {
-    alert('没有可导出的记录');
+    showToast('没有可导出的记录');
     return;
   }
   const result = await window.api.exportCSV(currentRecords);
   if (result?.ok) {
-    alert(`已导出到: ${result.filePath}`);
+    showToast(`已导出到: ${result.filePath}`);
   }
 });
 
 simulateBtnEl.addEventListener('click', async () => {
   const result = await window.api.simulateScan('123456');
   if (!result?.ok) {
-    alert('模拟扫码失败');
+    showToast('模拟扫码失败');
   }
 });
 
@@ -212,11 +250,12 @@ confirmDeleteBtnEl.addEventListener('click', async () => {
   if (!pendingDeleteId) return;
   const result = await window.api.deleteRecord(pendingDeleteId);
   if (!result?.ok) {
-    alert('删除失败');
+    showToast('删除失败');
   }
   closeDeleteModal();
   loadRecords();
 });
+
 
 searchInputEl.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') loadRecords();
@@ -253,6 +292,10 @@ window.api.onBarcode((record) => {
   flash();
   beep();
   currentPage = 1;
+  loadRecords();
+});
+
+window.api.onRecordVideoUpdated?.(() => {
   loadRecords();
 });
 

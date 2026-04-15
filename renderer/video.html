@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>录像配置</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="title">
+      <h1>扫码监听系统</h1>
+      <div class="nav">
+        <a class="nav-link" href="index.html">扫码记录</a>
+        <a class="nav-link" href="devices.html">工作台管理</a>
+        <a class="nav-link active" href="video.html">录像配置</a>
+      </div>
+      <p class="subtitle">录像配置 <span class="dot"></span></p>
+    </div>
+  </header>
+
+  <section class="query">
+    <div class="devices-card">
+      <div class="devices-top">
+        <div class="devices-title">录像设备</div>
+        <div class="devices-actions">
+          <button id="newBtn" class="secondary">新增录像设备</button>
+          <button id="saveBtn">保存当前</button>
+        </div>
+      </div>
+      <div class="video-layout">
+        <div class="video-layout-left">
+          <div class="devices-table-wrapper">
+            <table class="devices-table">
+              <thead>
+                <tr>
+                  <th>名称</th>
+                  <th>地址</th>
+                  <th>用户名</th>
+                  <th>启用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="videoDevicesBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="video-layout-right">
+          <div class="devices-add video-form">
+            <input id="videoNameInput" type="text" placeholder="录像设备名称(必填，如 海康NVR1)" />
+            <div class="video-form-row">
+              <input id="videoIpInput" type="text" placeholder="设备IP地址，例如 192.168.1.200" />
+              <input id="videoHttpPortInput" type="number" inputmode="numeric" placeholder="HTTP端口，例如 80" />
+            </div>
+            <div class="video-form-row">
+              <input id="videoUserInput" type="text" placeholder="登录账号(可选)" />
+              <input id="videoPassInput" type="password" placeholder="登录密码(可选)" />
+            </div>
+            <div class="video-form-row">
+              <input id="videoPortInput" type="number" inputmode="numeric" placeholder="SDK端口，例如 8000" />
+              <input id="videoRtspPortInput" type="number" inputmode="numeric" placeholder="RTSP端口(可选，默认 554)" />
+            </div>
+            <textarea id="videoExtraInput" placeholder="扩展参数(JSON，可选)，例如：{\"deviceId\":\"HK001\"}"></textarea>
+          </div>
+          <div class="video-actions">
+            <button id="loadChannelsBtn" class="secondary">加载通道列表</button>
+          </div>
+          <div id="channelList" class="video-channels"></div>
+        </div>
+      </div>
+      <div style="padding: 0 18px 18px 18px; color: #777; line-height: 1.6;">
+        支持多个录像设备。工作台绑定“录像设备 + 通道ID”后，扫码时会自动按绑定信息从设备截取对应时间段的录像并保存到本机。
+      </div>
+    </div>
+  </section>
+
+  <div id="livePreviewModal" class="modal hidden">
+    <div class="modal-card live-modal-card">
+      <div class="modal-title" id="livePreviewTitle">实时预览</div>
+      <div class="modal-body">
+        <div class="live-toolbar">
+          <button id="toggleMuteBtn" class="secondary">静音</button>
+          <select id="streamTypeSelect">
+            <option value="1">主码流</option>
+            <option value="2" selected>子码流</option>
+          </select>
+          <label class="live-toggle"><input id="autoReconnectChk" type="checkbox" checked /> 自动重连</label>
+          <button id="fullscreenBtn" class="secondary">全屏</button>
+          <div class="live-metrics">
+            <span id="liveLatency">延迟: --</span>
+            <span id="liveRetry">重连: 0</span>
+          </div>
+        </div>
+        <video id="livePreviewVideo" class="live-video" controls muted autoplay playsinline></video>
+        <div id="livePreviewStatus" class="status-text" style="margin-top: 8px;">未播放</div>
+      </div>
+      <div class="modal-actions">
+        <button id="stopLivePreviewBtn" class="secondary">停止</button>
+        <button id="closeLivePreviewBtn">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="video.js"></script>
+</body>
+</html>
