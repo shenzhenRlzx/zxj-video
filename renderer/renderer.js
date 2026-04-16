@@ -117,7 +117,28 @@ function renderRecords(records) {
     } else if (record.video_status) {
       const s = String(record.video_status);
       const msg = record.video_message ? ` (${String(record.video_message)})` : '';
-      videoCell.textContent = `${s}${msg}`;
+      const lower = s.toLowerCase();
+      const failed = s === '失败' || ['fail', 'failed', 'error'].includes(lower);
+      const waiting = s === '等待' || ['waiting', 'pending', 'processing', 'running', 'queue', 'queued'].includes(lower);
+      const statusSpan = document.createElement('span');
+      statusSpan.textContent = `${s}${msg}`;
+      videoCell.appendChild(statusSpan);
+      if ((failed || waiting) && !record.deleted) {
+        const retryBtn = document.createElement('button');
+        retryBtn.className = 'mini-btn';
+        retryBtn.style.marginLeft = '8px';
+        retryBtn.textContent = waiting ? '重新下载' : '重试下载';
+        retryBtn.addEventListener('click', async () => {
+          const res = await window.api.retryVideoDownload?.(record.id);
+          if (res?.ok) {
+            showToast('已提交重试任务');
+            await loadRecords();
+            return;
+          }
+          showToast(`重试失败: ${res?.message || 'unknown error'}`);
+        });
+        videoCell.appendChild(retryBtn);
+      }
     } else {
       videoCell.textContent = '--';
     }

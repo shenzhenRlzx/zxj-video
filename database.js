@@ -210,6 +210,34 @@ class Database {
     return obj;
   }
 
+  listPendingVideoRecords() {
+    const result = this.db.exec(
+      `SELECT
+        id,
+        barcode,
+        device_id,
+        scanned_at,
+        video_status,
+        video_backend_id,
+        video_path
+      FROM scan_records
+      WHERE deleted = 0
+        AND (video_path IS NULL OR trim(video_path) = '')
+        AND lower(trim(coalesce(video_status, ''))) IN ('等待', 'waiting', 'pending', 'processing', 'running', 'queue', 'queued')
+      ORDER BY scanned_at DESC, id DESC
+      LIMIT 500;`
+    );
+    if (result.length === 0) return [];
+    const { columns, values } = result[0];
+    return values.map((row) => {
+      const obj = {};
+      columns.forEach((col, idx) => {
+        obj[col] = row[idx];
+      });
+      return obj;
+    });
+  }
+
   queryRecords({ keyword, date, deviceId, page = 1, pageSize = 10, onlyDeleted = false }) {
     let sql = `SELECT
       r.id,

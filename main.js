@@ -6,9 +6,21 @@ const { Database } = require('./database');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { SerialPort } = require('serialport');
 const { buildRtspUrl } = require('./hikvision');
 const util = require('util');
+
+let SerialPort = null;
+function getSerialPort() {
+  if (SerialPort) return SerialPort;
+  try {
+    const mod = require('serialport');
+    SerialPort = mod?.SerialPort || null;
+    return SerialPort;
+  } catch (e) {
+    SerialPort = null;
+    return null;
+  }
+}
 
 let mainWindow;
 let toastWindow;
@@ -330,11 +342,44 @@ function normalizeVideoStatus(raw) {
 }
 
 const videoStatusPollers = new Map(); // recordId -> { timer, deadlineMs }
+const videoRetryCounts = new Map(); // recordId -> count
 
-function startVideoStatusPolling(recordId, backendUrl, endMs) {
+function stopVideoPolling(recordId) {
+  const safeId = Number(recordId);
+  if (!Number.isFinite(safeId)) return;
+  const entry = videoStatusPollers.get(safeId);
+  if (entry?.timer) clearTimeout(entry.timer);
+  videoStatusPollers.delete(safeId);
+  videoRetryCounts.delete(safeId);
+}
+
+function shouldIgnoreVideoUpdate(recordId, expectedTaskId) {
+  const safeId = Number(recordId);
+  if (!Number.isFinite(safeId) || !db) return true;
+  const row = db.getRecordById(safeId);
+  if (!row) return true;
+
+  const currentPath = String(row.video_path || '').trim();
+  if (currentPath) return true;
+
+  const currentStatus = normalizeVideoStatus(row.video_status);
+  if (currentStatus === '成功') return true;
+
+  if (expectedTaskId != null) {
+    const expected = String(expectedTaskId).trim();
+    const currentBackendId = String(row.video_backend_id || '').trim();
+    if (currentBackendId && expected && currentBackendId !== expected) return true;
+  }
+  return false;
+}
+
+function startVideoStatusPolling(recordId, backendUrl, endMs, taskId) {
   const safeId = Number(recordId);
   if (!Number.isFinite(safeId)) return;
   if (videoStatusPollers.has(safeId)) return;
+
+  const safeTaskId = Number(taskId ?? safeId);
+  if (!Number.isFinite(safeTaskId)) return;
 
   const now = Date.now();
   const safeEndMs = Number(endMs);
@@ -345,15 +390,32 @@ function startVideoStatusPolling(recordId, backendUrl, endMs) {
   const pollOnce = () => {
     const current = videoStatusPollers.get(safeId);
     if (!current) return;
+    if (shouldIgnoreVideoUpdate(safeId, safeTaskId)) {
+      stopVideoPolling(safeId);
+      return;
+    }
     if (Date.now() > deadlineMs) {
-      if (current.timer) clearTimeout(current.timer);
-      videoStatusPollers.delete(safeId);
+      const count = videoRetryCounts.get(safeId) || 0;
+      if (count < 1) {
+        videoRetryCounts.set(safeId, count + 1);
+        if (current.timer) clearTimeout(current.timer);
+        videoStatusPollers.delete(safeId);
+        tryVideoRetry(safeId, backendUrl);
+        return;
+      }
+      if (shouldIgnoreVideoUpdate(safeId, safeTaskId)) {
+        stopVideoPolling(safeId);
+        return;
+      }
+      db.setRecordVideoInfo(safeId, { status: '失败', backendId: String(safeTaskId), videoPath: null, message: 'timeout' });
+      notifyRecordVideoUpdated(safeId);
+      stopVideoPolling(safeId);
       return;
     }
     let url;
     try {
       url = new URL('/findByFree/status', backendUrl);
-      url.searchParams.set('id', String(safeId));
+      url.searchParams.set('id', String(safeTaskId));
     } catch (e) {
       videoStatusPollers.delete(safeId);
       return;
@@ -362,22 +424,38 @@ function startVideoStatusPolling(recordId, backendUrl, endMs) {
     requestVideoInfoFromBackend(url.toString(), backendUrl)
       .then((info) => {
         const status = info?.status || (info?.path ? '成功' : '等待');
-        const backendId = info?.backendId ?? String(safeId);
+        const backendId = info?.backendId ?? String(safeTaskId);
         const savedPathOrUrl = info?.path ?? null;
+        if (shouldIgnoreVideoUpdate(safeId, safeTaskId)) {
+          stopVideoPolling(safeId);
+          return;
+        }
 
         if (savedPathOrUrl) {
           db.setRecordVideoInfo(safeId, { status: '成功', backendId, videoPath: savedPathOrUrl, message: info?.message ?? null });
           notifyRecordVideoUpdated(safeId);
-          if (current.timer) clearTimeout(current.timer);
-          videoStatusPollers.delete(safeId);
+          stopVideoPolling(safeId);
           return;
         }
 
         if (status === '失败') {
+          const count = videoRetryCounts.get(safeId) || 0;
+          if (count < 1) {
+            videoRetryCounts.set(safeId, count + 1);
+            db.setRecordVideoInfo(safeId, { status: '等待', backendId, videoPath: null, message: 'retry' });
+            notifyRecordVideoUpdated(safeId);
+            if (current.timer) clearTimeout(current.timer);
+            videoStatusPollers.delete(safeId);
+            tryVideoRetry(safeId, backendUrl);
+            return;
+          }
+          if (shouldIgnoreVideoUpdate(safeId, safeTaskId)) {
+            stopVideoPolling(safeId);
+            return;
+          }
           db.setRecordVideoInfo(safeId, { status: '失败', backendId, videoPath: null, message: info?.message ?? null });
           notifyRecordVideoUpdated(safeId);
-          if (current.timer) clearTimeout(current.timer);
-          videoStatusPollers.delete(safeId);
+          stopVideoPolling(safeId);
           return;
         }
 
@@ -395,6 +473,57 @@ function startVideoStatusPolling(recordId, backendUrl, endMs) {
 
   videoStatusPollers.set(safeId, { timer: null, deadlineMs });
   pollOnce();
+}
+
+function parseLocalDateTime(raw) {
+  const s = String(raw || '').trim();
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+  if (!m) return null;
+  const d = new Date(`${m[1]}T${m[2]}`);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function generateTaskId() {
+  const suffix = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
+  const n = Number(`${Date.now()}${suffix}`);
+  return Number.isFinite(n) ? n : Date.now();
+}
+
+function tryVideoRetry(recordId, backendUrl) {
+  const safeId = Number(recordId);
+  if (!Number.isFinite(safeId)) return;
+  const record = db.getRecordById(safeId);
+  const deviceId = record?.device_id ?? null;
+  const scannerDevice = deviceId == null ? null : db.getDeviceById(deviceId);
+  if (!scannerDevice) {
+    db.setRecordVideoInfo(safeId, { status: '失败', backendId: String(recordId), videoPath: null, message: 'no device' });
+    notifyRecordVideoUpdated(safeId);
+    videoRetryCounts.delete(safeId);
+    return;
+  }
+  downloadVideo(scannerDevice, record, { backendUrl, taskId: generateTaskId(), isRetry: true });
+}
+
+function restorePendingVideoTasks() {
+  if (!db) return;
+  const list = db.listPendingVideoRecords?.();
+  const pending = Array.isArray(list) ? list : [];
+  console.log(`[VideoRestore] 启动恢复检查: 等待任务 ${pending.length} 条`);
+  if (!pending.length) return;
+  showToast(`已恢复 ${pending.length} 条等待录像任务`);
+
+  const backendUrl = getVideoBackendUrl();
+  pending.forEach((row, idx) => {
+    setTimeout(() => {
+      const recordId = Number(row?.id);
+      if (!Number.isFinite(recordId)) return;
+      const scannedAt = parseLocalDateTime(row?.scanned_at);
+      const estimatedEndMs = scannedAt ? (scannedAt.getTime() + 25_000) : (Date.now() + 30_000);
+      const backendTaskIdRaw = Number(row?.video_backend_id);
+      const backendTaskId = Number.isFinite(backendTaskIdRaw) ? backendTaskIdRaw : recordId;
+      startVideoStatusPolling(recordId, backendUrl, estimatedEndMs, backendTaskId);
+    }, idx * 120);
+  });
 }
 
 function requestVideoInfoFromBackend(urlString, backendUrl) {
@@ -431,7 +560,7 @@ function requestVideoInfoFromBackend(urlString, backendUrl) {
 }
 
 // 触发海康录像下载
-function downloadVideo(scannerDevice, record) {
+function downloadVideo(scannerDevice, record, { backendUrl, taskId, isRetry } = {}) {
   const barcode = String(record?.barcode || '');
   const recordIdRaw = record?.id;
   const recordId = recordIdRaw == null || recordIdRaw === '' ? null : Number(recordIdRaw);
@@ -455,9 +584,9 @@ function downloadVideo(scannerDevice, record) {
     return;
   }
 
-  const startTime = new Date();
-  startTime.setSeconds(startTime.getSeconds() - 5); // 提前5秒
-  const endTime = new Date(startTime.getTime() + 30 * 1000); // 默认30秒
+  const baseTime = parseLocalDateTime(record?.scanned_at) || new Date();
+  const startTime = new Date(baseTime.getTime() - 5_000);
+  const endTime = new Date(startTime.getTime() + 30_000);
 
   const formatTime = (d) => d.toISOString().replace('T', ' ').substring(0, 19);
 
@@ -512,12 +641,13 @@ function downloadVideo(scannerDevice, record) {
   console.log(JSON.stringify(payload, null, 2));
 
   try {
-    const backendUrl = getVideoBackendUrl();
-    const url = new URL('/findByFree', backendUrl);
+    const finalBackendUrl = backendUrl || getVideoBackendUrl();
+    const url = new URL('/findByFree', finalBackendUrl);
+    const chosenTaskId = Number(taskId ?? recordId);
     if (Number.isFinite(recordId)) {
       db.setRecordVideoInfo(recordId, { status: '等待', backendId: null, videoPath: null, message: null });
       notifyRecordVideoUpdated(recordId);
-      url.searchParams.set('id', String(recordId));
+      if (Number.isFinite(chosenTaskId)) url.searchParams.set('id', String(chosenTaskId));
     }
     url.searchParams.set('c', channelId);
     url.searchParams.set('expressNo', barcode);
@@ -530,14 +660,18 @@ function downloadVideo(scannerDevice, record) {
     url.searchParams.set('rtspPort', String(rtspPort || ''));
     url.searchParams.set('streamType', String(streamType || ''));
 
-    requestVideoInfoFromBackend(url.toString(), backendUrl)
+    requestVideoInfoFromBackend(url.toString(), finalBackendUrl)
       .then((info) => {
         const status = info?.status || (info?.path ? '成功' : '等待');
-        const backendId = info?.backendId ?? null;
+        const backendId = info?.backendId ?? (Number.isFinite(chosenTaskId) ? String(chosenTaskId) : null);
         const savedPathOrUrl = info?.path ?? null;
+        const expectedTaskId = Number.isFinite(chosenTaskId) ? String(chosenTaskId) : (backendId || null);
 
         if (savedPathOrUrl) console.log(`[VideoDownload] 后端已生成: ${savedPathOrUrl}`);
         if (Number.isFinite(recordId)) {
+          if (shouldIgnoreVideoUpdate(recordId, expectedTaskId)) {
+            return;
+          }
           if (savedPathOrUrl) {
             db.setRecordVideoInfo(recordId, { status: '成功', backendId, videoPath: savedPathOrUrl, message: info?.message ?? null });
           } else {
@@ -551,8 +685,8 @@ function downloadVideo(scannerDevice, record) {
         } else if (status === '失败') {
           showToast(`录像下载失败: ${barcode}`);
         } else {
-          showToast(`录像下载任务已提交: ${barcode}`);
-          if (Number.isFinite(recordId)) startVideoStatusPolling(recordId, backendUrl, endTime.getTime());
+          showToast(isRetry ? `录像补偿已提交: ${barcode}` : `录像下载任务已提交: ${barcode}`);
+          if (Number.isFinite(recordId)) startVideoStatusPolling(recordId, finalBackendUrl, endTime.getTime(), backendId);
         }
       })
       .catch((err) => {
@@ -817,7 +951,14 @@ class ScannerManager {
     this.setState(id, { state: 'connecting', lastError: null });
 
     if (d.type === 'usb') {
-      const sp = new SerialPort({ path: identifier, baudRate: 9600 }, (err) => {
+      const SerialPortCtor = getSerialPort();
+      if (!SerialPortCtor) {
+        this.setState(id, { state: 'error', lastError: 'serialport 模块加载失败' });
+        showToast('USB串口不可用：serialport 模块加载失败，请使用 Windows 环境重新打包');
+        entry.shouldReconnect = false;
+        return { ok: false, message: 'serialport load failed' };
+      }
+      const sp = new SerialPortCtor({ path: identifier, baudRate: 9600 }, (err) => {
         if (err) {
           const e = this.devices.get(id);
           if (e) this.setState(id, { state: 'error', lastError: String(err.message) });
@@ -934,6 +1075,7 @@ if (gotTheLock) app.whenReady().then(async () => {
   }
   scannerManager.setDevices(db.listDevices());
   scannerManager.connectEnabled();
+  restorePendingVideoTasks();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -1259,6 +1401,26 @@ ipcMain.handle('download-video', async (event, { id }) => {
   } catch (e) {
     return { ok: false, message: e?.message || String(e) };
   }
+});
+
+ipcMain.handle('retry-video-download', async (event, { id }) => {
+  const safeId = Number(id);
+  if (!Number.isFinite(safeId)) return { ok: false, message: 'invalid id' };
+  const record = db.getRecordById(safeId);
+  if (!record) return { ok: false, message: 'record not found' };
+  if (record.deleted) return { ok: false, message: 'record deleted' };
+
+  const deviceId = Number(record.device_id);
+  if (!Number.isFinite(deviceId)) return { ok: false, message: 'record has no device' };
+  const scannerDevice = db.getDeviceById(deviceId);
+  if (!scannerDevice) return { ok: false, message: 'device not found' };
+  if (!scannerDevice.enabled) return { ok: false, message: 'device disabled' };
+  if (!scannerDevice.channel_id) return { ok: false, message: 'device has no channel' };
+
+  stopVideoPolling(safeId);
+  const backendUrl = getVideoBackendUrl();
+  downloadVideo(scannerDevice, record, { backendUrl, taskId: generateTaskId(), isRetry: true });
+  return { ok: true };
 });
 
 ipcMain.handle('open-live-preview', (event, params) => {
