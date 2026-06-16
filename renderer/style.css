@@ -192,6 +192,39 @@ body {
   align-items: flex-start;
 }
 
+.video-settings {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fffdfa;
+}
+
+.video-setting-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.video-setting-field input[type="number"] {
+  min-width: 90px;
+  width: 110px;
+}
+
+.video-setting-total {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+  margin-left: auto;
+}
+
 .video-backend {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -612,6 +645,15 @@ tbody tr:hover {
 
   .video-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .video-settings {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .video-settings button {
+    width: 100%;
   }
 
   .barcode {

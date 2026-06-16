@@ -343,6 +343,45 @@ function normalizeVideoStatus(raw) {
 
 const videoStatusPollers = new Map(); // recordId -> { timer, deadlineMs }
 const videoRetryCounts = new Map(); // recordId -> count
+const DEFAULT_CLIP_BEFORE_SECONDS = 5;
+const DEFAULT_CLIP_AFTER_SECONDS = 55;
+
+function getVideoConfig() {
+  if (!db) return {};
+  const raw = db.getSetting('video_config');
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(String(raw));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function getClipWindowMs() {
+  const config = getVideoConfig();
+  const beforeRaw = Number(config.clipBeforeSeconds);
+  const afterRaw = Number(config.clipAfterSeconds);
+  if (Number.isFinite(beforeRaw) && beforeRaw >= 0 && Number.isFinite(afterRaw) && afterRaw >= 0 && beforeRaw + afterRaw > 0) {
+    return {
+      beforeMs: Math.round(beforeRaw * 1000),
+      afterMs: Math.round(afterRaw * 1000),
+      durationMs: Math.round((beforeRaw + afterRaw) * 1000)
+    };
+  }
+
+  const durationRaw = Number(config.clipDurationSeconds);
+  const durationSeconds = Number.isFinite(durationRaw) && durationRaw > 0
+    ? durationRaw
+    : DEFAULT_CLIP_BEFORE_SECONDS + DEFAULT_CLIP_AFTER_SECONDS;
+  const beforeSeconds = Math.min(DEFAULT_CLIP_BEFORE_SECONDS, durationSeconds);
+  const afterSeconds = Math.max(0, durationSeconds - beforeSeconds);
+  return {
+    beforeMs: Math.round(beforeSeconds * 1000),
+    afterMs: Math.round(afterSeconds * 1000),
+    durationMs: Math.round(durationSeconds * 1000)
+  };
+}
 
 function stopVideoPolling(recordId) {
   const safeId = Number(recordId);
@@ -518,7 +557,10 @@ function restorePendingVideoTasks() {
       const recordId = Number(row?.id);
       if (!Number.isFinite(recordId)) return;
       const scannedAt = parseLocalDateTime(row?.scanned_at);
-      const estimatedEndMs = scannedAt ? (scannedAt.getTime() + 25_000) : (Date.now() + 30_000);
+      const clipWindow = getClipWindowMs();
+      const estimatedEndMs = scannedAt
+        ? (scannedAt.getTime() + clipWindow.afterMs)
+        : (Date.now() + clipWindow.durationMs);
       const backendTaskIdRaw = Number(row?.video_backend_id);
       const backendTaskId = Number.isFinite(backendTaskIdRaw) ? backendTaskIdRaw : recordId;
       startVideoStatusPolling(recordId, backendUrl, estimatedEndMs, backendTaskId);
@@ -585,8 +627,9 @@ function downloadVideo(scannerDevice, record, { backendUrl, taskId, isRetry } = 
   }
 
   const baseTime = parseLocalDateTime(record?.scanned_at) || new Date();
-  const startTime = new Date(baseTime.getTime() - 5_000);
-  const endTime = new Date(startTime.getTime() + 30_000);
+  const clipWindow = getClipWindowMs();
+  const startTime = new Date(baseTime.getTime() - clipWindow.beforeMs);
+  const endTime = new Date(baseTime.getTime() + clipWindow.afterMs);
 
   const formatTime = (d) => d.toISOString().replace('T', ' ').substring(0, 19);
 

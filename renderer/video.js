@@ -9,11 +9,16 @@ const videoRtspPortInputEl = document.getElementById('videoRtspPortInput');
 const newBtnEl = document.getElementById('newBtn');
 const deleteBtnEl = document.getElementById('deleteBtn');
 const saveBtnEl = document.getElementById('saveBtn');
+const clipBeforeInputEl = document.getElementById('clipBeforeInput');
+const clipAfterInputEl = document.getElementById('clipAfterInput');
+const clipTotalTextEl = document.getElementById('clipTotalText');
+const saveConfigBtnEl = document.getElementById('saveConfigBtn');
 const loadChannelsBtnEl = document.getElementById('loadChannelsBtn');
 const channelListEl = document.getElementById('channelList');
 
 let videoDevices = [];
 let currentId = null;
+let videoConfig = { clipBeforeSeconds: 5, clipAfterSeconds: 55 };
 let liveFlvPlayer = null;
 let liveCurrentChannel = null;
 let liveCurrentOrigin = null;
@@ -400,6 +405,71 @@ function applyForm(device) {
   }
 }
 
+function readClipSeconds(inputEl) {
+  const raw = String(inputEl?.value || '').trim();
+  const n = Number(raw);
+  if (raw === '' || !Number.isFinite(n) || n < 0 || n > 3600) return null;
+  return Math.round(n);
+}
+
+function updateClipTotalText() {
+  const before = readClipSeconds(clipBeforeInputEl);
+  const after = readClipSeconds(clipAfterInputEl);
+  if (clipTotalTextEl) {
+    clipTotalTextEl.textContent = before == null || after == null
+      ? '总时长 -- 秒'
+      : `总时长 ${before + after} 秒`;
+  }
+}
+
+function applyVideoConfig(config) {
+  const next = config && typeof config === 'object' ? config : {};
+  const beforeRaw = Number(next.clipBeforeSeconds);
+  const afterRaw = Number(next.clipAfterSeconds);
+  let clipBeforeSeconds = Number.isFinite(beforeRaw) && beforeRaw >= 0 ? Math.round(beforeRaw) : null;
+  let clipAfterSeconds = Number.isFinite(afterRaw) && afterRaw >= 0 ? Math.round(afterRaw) : null;
+
+  if (clipBeforeSeconds == null || clipAfterSeconds == null || clipBeforeSeconds + clipAfterSeconds <= 0) {
+    const durationRaw = Number(next.clipDurationSeconds);
+    const durationSeconds = Number.isFinite(durationRaw) && durationRaw > 0 ? Math.round(durationRaw) : 60;
+    clipBeforeSeconds = Math.min(5, durationSeconds);
+    clipAfterSeconds = Math.max(0, durationSeconds - clipBeforeSeconds);
+  }
+
+  videoConfig = {
+    ...next,
+    clipBeforeSeconds,
+    clipAfterSeconds
+  };
+  if (clipBeforeInputEl) clipBeforeInputEl.value = String(videoConfig.clipBeforeSeconds);
+  if (clipAfterInputEl) clipAfterInputEl.value = String(videoConfig.clipAfterSeconds);
+  updateClipTotalText();
+}
+
+async function loadVideoConfig() {
+  const res = await window.api.getVideoConfig?.();
+  applyVideoConfig(res?.config || null);
+}
+
+async function saveVideoConfig() {
+  const clipBeforeSeconds = readClipSeconds(clipBeforeInputEl);
+  const clipAfterSeconds = readClipSeconds(clipAfterInputEl);
+  if (clipBeforeSeconds == null || clipAfterSeconds == null || clipBeforeSeconds + clipAfterSeconds <= 0) {
+    showToast('扫码前/扫码后请输入 0-3600 秒，且总时长需大于 0');
+    return false;
+  }
+  const nextConfig = { ...videoConfig, clipBeforeSeconds, clipAfterSeconds };
+  delete nextConfig.clipDurationSeconds;
+  const res = await window.api.setVideoConfig?.(nextConfig);
+  if (!res?.ok) {
+    showToast(`保存设置失败: ${res?.message || 'unknown error'}`);
+    return false;
+  }
+  applyVideoConfig(nextConfig);
+  showToast('设置已保存');
+  return true;
+}
+
 async function loadVideoDevices() {
   videoDevices = (await window.api.listVideoDevices()) || [];
   renderVideoDevices();
@@ -527,6 +597,10 @@ deleteBtnEl?.addEventListener('click', async () => {
   currentId = null;
   await loadVideoDevices();
 });
+
+saveConfigBtnEl?.addEventListener('click', saveVideoConfig);
+clipBeforeInputEl?.addEventListener('input', updateClipTotalText);
+clipAfterInputEl?.addEventListener('input', updateClipTotalText);
 
 saveBtnEl?.addEventListener('click', async () => {
   const name = String(videoNameInputEl?.value || '').trim();
@@ -695,6 +769,7 @@ loadChannelsBtnEl?.addEventListener('click', async () => {
 });
 
 window.addEventListener('DOMContentLoaded', async () => {
+  await loadVideoConfig();
   await loadVideoDevices();
 });
 

@@ -29,6 +29,20 @@
           <button id="saveBtn">保存当前</button>
         </div>
       </div>
+      <div class="video-settings">
+        <div class="video-setting-field">
+          <span>扫码前</span>
+          <input id="clipBeforeInput" type="number" inputmode="numeric" min="0" max="3600" step="1" value="5" />
+          <span>秒</span>
+        </div>
+        <div class="video-setting-field">
+          <span>扫码后</span>
+          <input id="clipAfterInput" type="number" inputmode="numeric" min="0" max="3600" step="1" value="55" />
+          <span>秒</span>
+        </div>
+        <div id="clipTotalText" class="video-setting-total">总时长 60 秒</div>
+        <button id="saveConfigBtn" class="secondary">保存设置</button>
+      </div>
       <div class="video-layout">
         <div class="video-layout-left">
           <div class="devices-table-wrapper">
