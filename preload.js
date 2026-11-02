@@ -36,7 +36,14 @@ contextBridge.exposeInMainWorld('api', {
   openLivePreview: (params) => ipcRenderer.invoke('open-live-preview', params),
   getLogs: () => ipcRenderer.invoke('get-logs'),
   clearLogs: () => ipcRenderer.invoke('clear-logs'),
-  onLogEntry: (callback) => {
-    ipcRenderer.on('log-entry', (_event, data) => callback(data));
-  }
+  openLogsFolder: () => ipcRenderer.invoke('open-logs-folder'),
+  onLogBatch: (callback) => {
+    ipcRenderer.on('log-batch', (_event, batch) => callback(batch));
+  },
+  getAutoStart: () => ipcRenderer.invoke('get-autostart'),
+  setAutoStart: (enabled) => ipcRenderer.invoke('set-autostart', !!enabled),
+  getAutoRestart: () => ipcRenderer.invoke('get-auto-restart'),
+  setAutoRestart: (config) => ipcRenderer.invoke('set-auto-restart', config || {}),
+  retryVideoBatch: (params) => ipcRenderer.invoke('retry-video-batch', params || {}),
+  retryVideoIds: (ids) => ipcRenderer.invoke('retry-video-ids', { ids: ids || [] })
 });

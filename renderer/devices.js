@@ -559,6 +559,7 @@ function deviceStatusText(state) {
   if (state === 'connected') return '已连接';
   if (state === 'connecting') return '连接中';
   if (state === 'waiting_connection') return '等待连接';
+  if (state === 'stale') return '已连接(长时间无数据)';
   if (state === 'error') return '异常';
   return '未连接';
 }
@@ -615,16 +616,21 @@ function renderDevices(devices) {
     const statusCell = document.createElement('td');
     const base = deviceStatusText(d.state);
     const clientPortText = d?.client?.port ? ` 客户端:${String(d.client.port)}` : '';
-    statusCell.textContent = d.lastError ? `${base}: ${d.lastError}${clientPortText}` : `${base}${clientPortText}`;
+    const lastSeen = d?.client?.last_seen_at
+      ? ` 最近收数:${String(d.client.last_seen_at).replace('T', ' ').slice(5, 19)}`
+      : '';
+    statusCell.textContent = d.lastError
+      ? `${base}: ${d.lastError}${clientPortText}`
+      : `${base}${clientPortText}${lastSeen}`;
     row.appendChild(statusCell);
 
     const actionCell = document.createElement('td');
     const connectBtn = document.createElement('button');
     connectBtn.className = 'mini-btn';
-    connectBtn.textContent = (d.state === 'connected' || d.state === 'waiting_connection') ? '断开' : '连接';
+    const isOnline = ['connected', 'waiting_connection', 'stale', 'connecting'].includes(d.state);
+    connectBtn.textContent = isOnline ? '断开' : '连接';
     connectBtn.addEventListener('click', async () => {
-      const res =
-        (d.state === 'connected' || d.state === 'waiting_connection')
+      const res = isOnline
           ? await window.api.disconnectDevice(d.id)
           : await window.api.connectDevice(d.id);
       if (!res?.ok) showToast(`操作失败: ${res?.message || 'unknown error'}`);
@@ -695,6 +701,16 @@ function applyRuntimeInfo(info) {
     const port = info?.tcpListenPort ? Number(info.tcpListenPort) : 2006;
     localIpInfoEl.textContent = ips.length ? `本机IP: ${ips.join(' / ')} (TCP监听端口: ${port})` : '本机IP: --';
   }
+  const unknownBar = document.getElementById('unknownClientsBar');
+  if (unknownBar) {
+    const unknown = Array.isArray(info?.unknownClients) ? info.unknownClients : [];
+    if (unknown.length) {
+      unknownBar.textContent = `未知设备尝试连接: ${unknown.map((u) => `${u.ip}(${u.count}次)`).join('、')} —— 若为扫码枪请将其 IP 添加为工作台，或检查其地址是否变化`;
+      unknownBar.classList.remove('hidden');
+    } else {
+      unknownBar.classList.add('hidden');
+    }
+  }
   renderDevices(info?.devices);
 }
 
@@ -721,9 +737,59 @@ addDeviceBtnEl?.addEventListener('click', async () => {
   if (deviceChannelSelectEl) renderChannelSelect(deviceChannelSelectEl, [], '录像通道(先选录像设备)');
 });
 
+// ============ 开机自启 / 每日定时重启 ============
+const autoStartCheckboxEl = document.getElementById('autoStartCheckbox');
+const autoRestartCheckboxEl = document.getElementById('autoRestartCheckbox');
+const autoRestartTimeEl = document.getElementById('autoRestartTime');
+const saveRuntimeSettingsBtnEl = document.getElementById('saveRuntimeSettingsBtn');
+const runtimeSettingsHintEl = document.getElementById('runtimeSettingsHint');
+
+async function loadRuntimeSettings() {
+  if (!autoStartCheckboxEl || !autoRestartCheckboxEl) return;
+  try {
+    const autoStart = await window.api.getAutoStart?.();
+    autoStartCheckboxEl.checked = !!(autoStart?.ok && autoStart.enabled);
+    if (autoStart && !autoStart.ok && autoStart.message) {
+      runtimeSettingsHintEl.textContent = autoStart.message;
+    }
+    const autoRestart = await window.api.getAutoRestart?.();
+    if (autoRestart?.ok) {
+      autoRestartCheckboxEl.checked = !!autoRestart.enabled;
+      if (autoRestartTimeEl && autoRestart.time) autoRestartTimeEl.value = autoRestart.time;
+    }
+  } catch (e) { }
+}
+
+saveRuntimeSettingsBtnEl?.addEventListener('click', async () => {
+  if (!runtimeSettingsHintEl) return;
+  runtimeSettingsHintEl.textContent = '';
+  const autoStartResult = await window.api.setAutoStart?.(autoStartCheckboxEl?.checked);
+  if (autoStartResult && !autoStartResult.ok) {
+    runtimeSettingsHintEl.textContent = `开机自启设置失败: ${autoStartResult.message || 'unknown'}`;
+    return;
+  }
+  const restartResult = await window.api.setAutoRestart?.({
+    enabled: autoRestartCheckboxEl?.checked,
+    time: autoRestartTimeEl?.value || '04:00'
+  });
+  if (restartResult?.ok) {
+    runtimeSettingsHintEl.textContent = '已保存';
+    setTimeout(() => { if (runtimeSettingsHintEl) runtimeSettingsHintEl.textContent = ''; }, 2500);
+  } else {
+    runtimeSettingsHintEl.textContent = `定时重启设置失败: ${restartResult?.message || 'unknown'}`;
+  }
+});
+
 connectEnabledBtnEl?.addEventListener('click', async () => {
   const result = await window.api.connectEnabledDevices();
   if (!result?.ok) showToast(`操作失败: ${result?.message || 'unknown error'}`);
+});
+
+const openLogsFolderBtnEl = document.getElementById('openLogsFolderBtn');
+
+openLogsFolderBtnEl?.addEventListener('click', async () => {
+  const result = await window.api.openLogsFolder?.();
+  if (result && !result.ok) showToast(`打开日志文件夹失败: ${result.message || 'unknown'}`);
 });
 
 disconnectAllBtnEl?.addEventListener('click', async () => {
@@ -755,9 +821,11 @@ window.api.onScannersStatus?.((info) => {
   applyRuntimeInfo(info);
 });
 
-window.api.onLogEntry?.((entry) => {
+window.api.onLogBatch?.((batch) => {
   if (logModalEl && !logModalEl.classList.contains('hidden')) {
-    appendLog(entry);
+    for (const entry of Array.isArray(batch) ? batch : []) {
+      appendLog(entry);
+    }
   }
 });
 
@@ -767,6 +835,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderEditVideoDeviceSelect();
   renderChannelSelect(deviceChannelSelectEl, [], '录像通道(先选录像设备)');
   renderChannelSelect(editDeviceChannelSelectEl, [], '录像通道(先选录像设备)');
+  loadRuntimeSettings();
   const info = await window.api.getRuntimeInfo();
   applyRuntimeInfo(info);
 });

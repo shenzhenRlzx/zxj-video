@@ -438,6 +438,18 @@ tbody tr:hover {
   display: none;
 }
 
+.id-col {
+  color: #999;
+  font-size: 12px;
+  white-space: nowrap;
+  min-width: 44px;
+}
+
+.date-sep {
+  color: #999;
+  padding: 0 2px;
+}
+
 .mini-btn {
   background: var(--brand);
   padding: 6px 10px;
@@ -571,6 +583,70 @@ tbody tr:hover {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+}
+
+.select-col {
+  width: 36px;
+  text-align: center;
+}
+
+.batch-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 12px;
+}
+
+.selected-hint {
+  color: #1565c0;
+  font-size: 13px;
+}
+
+.runtime-settings {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 0 4px 0;
+  font-size: 14px;
+  color: #444;
+}
+
+.runtime-setting-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.runtime-setting-hint {
+  color: #2e7d32;
+  font-size: 13px;
+}
+
+.alert-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 24px 12px 24px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: #fdecea;
+  border: 1px solid #f5c6c2;
+  color: #b3261e;
+  font-size: 14px;
+}
+
+.alert-bar.hidden {
+  display: none;
+}
+
+.alert-bar a {
+  color: #b3261e;
+  font-weight: 600;
+  text-decoration: underline;
+  white-space: nowrap;
 }
 
 .toast {

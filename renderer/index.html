@@ -20,6 +20,11 @@
     </div>
   </header>
 
+  <div id="alertBar" class="alert-bar hidden">
+    <span id="alertText"></span>
+    <a id="alertLink" href="devices.html">前往工作台管理处理</a>
+  </div>
+
   <section class="latest">
     <div class="latest-card">
       <div class="label">最近扫码</div>
@@ -31,7 +36,9 @@
   <section class="query">
     <div class="filters">
       <input id="searchInput" type="text" placeholder="按单号模糊搜索" />
-      <input id="dateInput" type="date" />
+      <input id="dateFromInput" type="date" title="开始日期" />
+      <span class="date-sep">~</span>
+      <input id="dateToInput" type="date" title="结束日期" />
       <select id="deviceFilterSelect">
         <option value="">全部工作台</option>
       </select>
@@ -39,17 +46,30 @@
         <option value="active">正常记录</option>
         <option value="deleted">已删除记录</option>
       </select>
+      <select id="videoStatusSelect">
+        <option value="">全部视频状态</option>
+        <option value="waiting">视频未完成（等待/下载中）</option>
+        <option value="success">视频成功</option>
+        <option value="failed">视频失败</option>
+        <option value="none">无视频状态</option>
+      </select>
       <button id="searchBtn">查询</button>
       <button id="resetBtn">重置</button>
       <button id="exportBtn">导出 CSV</button>
+      <button id="retryVideoBatchBtn" class="secondary">补下载视频</button>
       <button id="simulateBtn">模拟扫码</button>
+      <span class="batch-actions">
+        <button id="batchDeleteBtn" class="secondary" disabled>删除选中</button>
+        <span id="selectedCountHint" class="selected-hint"></span>
+      </span>
     </div>
 
     <div class="table-wrapper">
       <table>
         <thead>
           <tr>
-            <th class="hidden-col">序号</th>
+            <th class="select-col"><input type="checkbox" id="selectAllCheckbox" title="全选本页" /></th>
+            <th class="id-col">ID</th>
             <th>单号</th>
             <th>工作台</th>
             <th>扫码时间</th>
@@ -68,6 +88,7 @@
         <option value="10">每页 10 条</option>
         <option value="20">每页 20 条</option>
         <option value="50">每页 50 条</option>
+        <option value="all">全部</option>
       </select>
     </div>
   </section>

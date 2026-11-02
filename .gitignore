@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+fix-err.txt
+fix-out.txt
+tmp-*.js
+.DS_Store

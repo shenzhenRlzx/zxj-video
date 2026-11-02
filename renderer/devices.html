@@ -23,6 +23,20 @@
 
   <section class="query">
     <div class="devices-card">
+      <div id="unknownClientsBar" class="alert-bar hidden"></div>
+      <div class="runtime-settings">
+        <label class="runtime-setting-item">
+          <input type="checkbox" id="autoStartCheckbox" />
+          开机自动启动软件
+        </label>
+        <label class="runtime-setting-item">
+          <input type="checkbox" id="autoRestartCheckbox" />
+          每日定时重启
+        </label>
+        <input type="time" id="autoRestartTime" value="04:00" />
+        <button id="saveRuntimeSettingsBtn" class="secondary">保存</button>
+        <span id="runtimeSettingsHint" class="runtime-setting-hint"></span>
+      </div>
       <div class="devices-top">
         <div class="devices-title">扫码工作台</div>
         <div class="devices-actions">
@@ -71,6 +85,7 @@
         <pre id="logText" class="log-pre"></pre>
       </div>
       <div class="modal-actions">
+        <button id="openLogsFolderBtn" class="secondary">打开日志文件夹</button>
         <button id="copyLogsBtn" class="secondary">复制</button>
         <button id="clearLogsBtn" class="secondary">清空</button>
         <button id="closeLogsBtn">关闭</button>

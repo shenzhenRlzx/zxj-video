@@ -1,18 +1,19 @@
 {
   "name": "zxj-video-v4",
-  "version": "0.1.0",
-  "description": "Electron + sql.js barcode scanner",
+  "version": "0.2.0",
+  "description": "Electron + better-sqlite3 barcode scanner",
   "main": "main.js",
   "author": "",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "clean:win": "node -e \"require('fs').rmSync('dist\\\\win-unpacked', { recursive: true, force: true });\"",
-    "build:win": "npm run clean:win && set CSC_IDENTITY_AUTO_DISCOVERY=false&& set ELECTRON_BUILDER_CACHE=%CD%\\dist\\.electron-builder-cache&& electron-builder --win --x64"
+    "postinstall": "node scripts/prepare-electron-native.js",
+    "clean:win": "node -e \"try{require('fs').rmSync('dist\\\\win-unpacked', { recursive: true, force: true })}catch(e){console.warn('clean warn:', e.message)}\"",
+    "build:win": "npm run clean:win && node scripts/prepare-electron-native.js && set CSC_IDENTITY_AUTO_DISCOVERY=false&& set ELECTRON_BUILDER_CACHE=%CD%\\dist\\.electron-builder-cache&& electron-builder --win --x64"
   },
   "dependencies": {
-    "serialport": "^13.0.0",
-    "sql.js": "^1.9.0"
+    "better-sqlite3": "^11.10.0",
+    "serialport": "^13.0.0"
   },
   "devDependencies": {
     "electron": "^30.0.1",
@@ -32,6 +33,16 @@
       "node_modules/**/*"
     ],
     "asar": true,
+    "npmRebuild": false,
+    "asarUnpack": [
+      "**/node_modules/serialport/**",
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/@serialport/**",
+      "**/node_modules/bindings/**",
+      "**/node_modules/file-uri-to-path/**",
+      "**/node_modules/node-gyp-build/**",
+      "**/node_modules/prebuild-install/**"
+    ],
     "win": {
       "target": [
         "nsis",

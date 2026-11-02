@@ -1,32 +1,46 @@
 const fs = require('fs');
 const path = require('path');
-const initSqlJs = require('sql.js');
+const Database = require('better-sqlite3');
 
-class Database {
+const RECORD_SELECT_FIELDS = `
+  r.id,
+  r.barcode,
+  r.device_id,
+  r.scanned_at,
+  r.deleted,
+  r.video_path,
+  r.video_status,
+  r.video_backend_id,
+  r.video_message,
+  r.video_updated_at,
+  d.name as device_name,
+  d.type as device_type,
+  d.identifier as device_identifier,
+  d.channel_id as device_channel_id
+`;
+
+const RECORD_FROM = `FROM scan_records r LEFT JOIN scanner_devices d ON r.device_id = d.id`;
+
+class AppDatabase {
   constructor(app) {
     this.app = app;
     this.db = null;
     this.dbFile = null;
-    this.SQL = null;
+    this._stmts = new Map();
   }
 
   async init() {
-    const appPath = this.app.getAppPath();
-    // sql.js loads wasm by filename, so we provide an absolute path.
-    const locateFile = (file) => path.join(appPath, 'node_modules', 'sql.js', 'dist', file);
-    this.SQL = await initSqlJs({ locateFile });
-
     const userData = this.app.getPath('userData');
+    fs.mkdirSync(userData, { recursive: true });
     this.dbFile = path.join(userData, 'records.db');
 
-    if (fs.existsSync(this.dbFile)) {
-      const fileBuffer = fs.readFileSync(this.dbFile);
-      this.db = new this.SQL.Database(fileBuffer);
-    } else {
-      this.db = new this.SQL.Database();
-    }
+    // 旧版使用 sql.js 导出的也是标准 SQLite 文件，better-sqlite3 可直接打开，无需迁移。
+    this.db = new Database(this.dbFile);
+    this.db.pragma('journal_mode = WAL');
+    this.db.pragma('synchronous = NORMAL');
+    this.db.pragma('busy_timeout = 5000');
 
-    this.db.run(`CREATE TABLE IF NOT EXISTS scan_records (
+    this.db.exec(`CREATE TABLE IF NOT EXISTS scan_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       barcode TEXT NOT NULL,
       device_id INTEGER,
@@ -40,7 +54,7 @@ class Database {
       video_updated_at DATETIME
     );`);
 
-    this.db.run(`CREATE TABLE IF NOT EXISTS scanner_devices (
+    this.db.exec(`CREATE TABLE IF NOT EXISTS scanner_devices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT,
       type TEXT DEFAULT 'tcp',
@@ -54,7 +68,7 @@ class Database {
       updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
     );`);
 
-    this.db.run(`CREATE TABLE IF NOT EXISTS video_devices (
+    this.db.exec(`CREATE TABLE IF NOT EXISTS video_devices (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       base_url TEXT,
@@ -66,86 +80,86 @@ class Database {
       updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
     );`);
 
-    this.db.run(`CREATE TABLE IF NOT EXISTS app_settings (
+    this.db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT,
       updated_at DATETIME DEFAULT (datetime('now', 'localtime'))
     );`);
 
     // Ensure new columns exist for older databases.
-    const columns = this.db.exec("PRAGMA table_info(scan_records);");
-    const existing = new Set((columns[0]?.values || []).map((row) => row[1]));
-    if (!existing.has('deleted')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN deleted INTEGER DEFAULT 0;');
+    const recordColumns = new Set(
+      this.db.prepare('PRAGMA table_info(scan_records)').all().map((row) => row.name)
+    );
+    const addRecordColumn = (name, ddl) => {
+      if (!recordColumns.has(name)) this.db.exec(ddl);
+    };
+    addRecordColumn('deleted', 'ALTER TABLE scan_records ADD COLUMN deleted INTEGER DEFAULT 0;');
+    addRecordColumn('deleted_at', 'ALTER TABLE scan_records ADD COLUMN deleted_at DATETIME;');
+    addRecordColumn('device_id', 'ALTER TABLE scan_records ADD COLUMN device_id INTEGER;');
+    addRecordColumn('video_path', 'ALTER TABLE scan_records ADD COLUMN video_path TEXT;');
+    addRecordColumn('video_status', 'ALTER TABLE scan_records ADD COLUMN video_status TEXT;');
+    addRecordColumn('video_backend_id', 'ALTER TABLE scan_records ADD COLUMN video_backend_id TEXT;');
+    addRecordColumn('video_message', 'ALTER TABLE scan_records ADD COLUMN video_message TEXT;');
+    addRecordColumn('video_updated_at', 'ALTER TABLE scan_records ADD COLUMN video_updated_at DATETIME;');
+
+    const deviceColumns = new Set(
+      this.db.prepare('PRAGMA table_info(scanner_devices)').all().map((row) => row.name)
+    );
+    if (!deviceColumns.has('type')) {
+      this.db.exec("ALTER TABLE scanner_devices ADD COLUMN type TEXT DEFAULT 'tcp';");
     }
-    if (!existing.has('deleted_at')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN deleted_at DATETIME;');
+    if (!deviceColumns.has('identifier')) {
+      this.db.exec('ALTER TABLE scanner_devices ADD COLUMN identifier TEXT;');
+      this.db.exec("UPDATE scanner_devices SET identifier = host WHERE type = 'tcp' AND identifier IS NULL;");
     }
-    if (!existing.has('device_id')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN device_id INTEGER;');
+    if (!deviceColumns.has('channel_id')) {
+      this.db.exec('ALTER TABLE scanner_devices ADD COLUMN channel_id TEXT;');
     }
-    if (!existing.has('video_path')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN video_path TEXT;');
-    }
-    if (!existing.has('video_status')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN video_status TEXT;');
-    }
-    if (!existing.has('video_backend_id')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN video_backend_id TEXT;');
-    }
-    if (!existing.has('video_message')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN video_message TEXT;');
-    }
-    if (!existing.has('video_updated_at')) {
-      this.db.run('ALTER TABLE scan_records ADD COLUMN video_updated_at DATETIME;');
+    if (!deviceColumns.has('video_device_id')) {
+      this.db.exec('ALTER TABLE scanner_devices ADD COLUMN video_device_id INTEGER;');
     }
 
-    const deviceColumns = this.db.exec("PRAGMA table_info(scanner_devices);");
-    const existingDeviceCols = new Set((deviceColumns[0]?.values || []).map((row) => row[1]));
-    if (!existingDeviceCols.has('type')) {
-      this.db.run("ALTER TABLE scanner_devices ADD COLUMN type TEXT DEFAULT 'tcp';");
-    }
-    if (!existingDeviceCols.has('identifier')) {
-      this.db.run("ALTER TABLE scanner_devices ADD COLUMN identifier TEXT;");
-      this.db.run("UPDATE scanner_devices SET identifier = host WHERE type = 'tcp' AND identifier IS NULL;");
-    }
-    if (!existingDeviceCols.has('channel_id')) {
-      this.db.run("ALTER TABLE scanner_devices ADD COLUMN channel_id TEXT;");
-    }
-    if (!existingDeviceCols.has('video_device_id')) {
-      this.db.run('ALTER TABLE scanner_devices ADD COLUMN video_device_id INTEGER;');
-    }
-
-    // Persist the DB so the file exists even before the first insert.
-    this.save();
+    // WAL 模式下由 SQLite 自动增量落盘，save() 仅为兼容旧调用保留。
   }
 
-  save() {
-    const data = this.db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(this.dbFile, buffer);
+  _stmt(sql) {
+    let stmt = this._stmts.get(sql);
+    if (!stmt) {
+      stmt = this.db.prepare(sql);
+      this._stmts.set(sql, stmt);
+    }
+    return stmt;
+  }
+
+  // 兼容旧接口：WAL 模式下数据已实时落盘，无需手动导出。
+  save() {}
+
+  close() {
+    if (!this.db) return;
+    try {
+      this.db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch (e) { }
+    try {
+      this.db.close();
+    } catch (e) { }
+    this.db = null;
   }
 
   insertRecord(barcode, deviceId = null) {
     const safeDeviceId = deviceId == null ? null : Number(deviceId);
     const hasDeviceId = safeDeviceId == null ? null : Number.isFinite(safeDeviceId) ? safeDeviceId : null;
-    this.db.run('INSERT INTO scan_records (barcode, device_id) VALUES (?, ?);', [barcode, hasDeviceId]);
-    const last = this.db.exec('SELECT last_insert_rowid() as id;');
-    const id = last[0]?.values?.[0]?.[0];
-    this.save();
-    if (id != null) {
-      const record = this.getRecordById(id);
-      if (record) return record;
-    }
+    const info = this._stmt('INSERT INTO scan_records (barcode, device_id) VALUES (?, ?);').run(barcode, hasDeviceId);
+    const record = this.getRecordById(info.lastInsertRowid);
+    if (record) return record;
     return { barcode, device_id: hasDeviceId, scanned_at: new Date().toISOString() };
   }
 
   setRecordVideoPath(id, videoPath) {
     const safeId = Number(id);
     if (!Number.isFinite(safeId)) return;
-    const safePath = videoPath == null ? null : String(videoPath);
-    this.db.run('UPDATE scan_records SET video_path = ? WHERE id = ?;', [safePath, safeId]);
-    this.save();
+    // 视频地址清洗：去控制字符与首尾空白（保留路径内部空格）
+    const safePath = videoPath == null ? null : String(videoPath).replace(/[\x00-\x1F\x7F]/g, '').trim();
+    this._stmt('UPDATE scan_records SET video_path = ? WHERE id = ?;').run(safePath, safeId);
   }
 
   setRecordVideoInfo(id, { status, backendId, videoPath, message } = {}) {
@@ -154,64 +168,37 @@ class Database {
 
     const safeStatus = status == null ? null : String(status);
     const safeBackendId = backendId == null ? null : String(backendId);
-    const safePath = videoPath == null ? null : String(videoPath);
+    // 视频地址清洗：去控制字符与首尾空白（保留路径内部空格）
+    const safePath = videoPath == null ? null : String(videoPath).replace(/[\x00-\x1F\x7F]/g, '').trim();
     const safeMessage = message == null ? null : String(message);
 
-    this.db.run(
+    this._stmt(
       `UPDATE scan_records
        SET video_status = ?,
            video_backend_id = ?,
            video_path = COALESCE(?, video_path),
            video_message = ?,
            video_updated_at = datetime('now', 'localtime')
-       WHERE id = ?;`,
-      [safeStatus, safeBackendId, safePath, safeMessage, safeId]
-    );
-    this.save();
+       WHERE id = ?;`
+    ).run(safeStatus, safeBackendId, safePath, safeMessage, safeId);
   }
 
   deleteRecord(id) {
-    this.db.run(
-      "UPDATE scan_records SET deleted = 1, deleted_at = datetime('now', 'localtime') WHERE id = ?;",
-      [id]
-    );
-    this.save();
+    this._stmt(
+      "UPDATE scan_records SET deleted = 1, deleted_at = datetime('now', 'localtime') WHERE id = ?;"
+    ).run(Number(id));
   }
 
   getRecordById(id) {
     const safeId = Number(id);
     if (!Number.isFinite(safeId)) return null;
-    const sql = `SELECT
-      r.id,
-      r.barcode,
-      r.device_id,
-      r.scanned_at,
-      r.deleted,
-      r.video_path,
-      r.video_status,
-      r.video_backend_id,
-      r.video_message,
-      r.video_updated_at,
-      d.name as device_name,
-      d.type as device_type,
-      d.identifier as device_identifier,
-      d.channel_id as device_channel_id
-    FROM scan_records r
-    LEFT JOIN scanner_devices d ON r.device_id = d.id
-    WHERE r.id = ?`;
-    const result = this.db.exec(sql, [safeId]);
-    if (result.length === 0) return null;
-    const { columns, values } = result[0];
-    const row = values[0];
-    const obj = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj;
+    return this._stmt(
+      `SELECT ${RECORD_SELECT_FIELDS} ${RECORD_FROM} WHERE r.id = ?`
+    ).get(safeId) || null;
   }
 
   listPendingVideoRecords() {
-    const result = this.db.exec(
+    return this._stmt(
       `SELECT
         id,
         barcode,
@@ -223,128 +210,117 @@ class Database {
       FROM scan_records
       WHERE deleted = 0
         AND (video_path IS NULL OR trim(video_path) = '')
-        AND lower(trim(coalesce(video_status, ''))) IN ('等待', 'waiting', 'pending', 'processing', 'running', 'queue', 'queued')
-      ORDER BY scanned_at DESC, id DESC
+        AND lower(trim(coalesce(video_status, ''))) IN ('等待', '下载中', 'waiting', 'pending', 'processing', 'running', 'queue', 'queued', 'downloading')
+      ORDER BY id DESC
       LIMIT 500;`
-    );
-    if (result.length === 0) return [];
-    const { columns, values } = result[0];
-    return values.map((row) => {
-      const obj = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    ).all();
   }
 
-  queryRecords({ keyword, date, deviceId, page = 1, pageSize = 10, onlyDeleted = false }) {
-    let sql = `SELECT
-      r.id,
-      r.barcode,
-      r.device_id,
-      r.scanned_at,
-      r.deleted,
-      r.video_path,
-      r.video_status,
-      r.video_backend_id,
-      r.video_message,
-      r.video_updated_at,
-      d.name as device_name,
-      d.type as device_type,
-      d.identifier as device_identifier,
-      d.channel_id as device_channel_id
-    FROM scan_records r
-    LEFT JOIN scanner_devices d ON r.device_id = d.id`;
-    const params = [];
+  queryRecords({ keyword, date, dateFrom, dateTo, deviceId, page = 1, pageSize = 10, onlyDeleted = false, videoStatus = '' }) {
     const where = [];
+    const params = {};
 
     if (keyword) {
-      where.push('r.barcode LIKE ?');
-      params.push(`%${keyword}%`);
+      where.push('r.barcode LIKE @keyword');
+      params.keyword = `%${keyword}%`;
     }
     if (date) {
-      where.push("date(r.scanned_at) = ?");
-      params.push(date);
+      where.push('date(r.scanned_at) = @date');
+      params.date = date;
+    }
+    if (dateFrom) {
+      where.push('date(r.scanned_at) >= @dateFrom');
+      params.dateFrom = dateFrom;
+    }
+    if (dateTo) {
+      where.push('date(r.scanned_at) <= @dateTo');
+      params.dateTo = dateTo;
     }
     if (deviceId != null && deviceId !== '') {
       const safeDeviceId = Number(deviceId);
       if (Number.isFinite(safeDeviceId)) {
-        where.push('r.device_id = ?');
-        params.push(safeDeviceId);
+        where.push('r.device_id = @deviceId');
+        params.deviceId = safeDeviceId;
       }
     }
-    if (onlyDeleted) {
-      where.push('r.deleted = 1');
-    } else {
-      where.push('r.deleted = 0');
+    if (videoStatus) {
+      const v = String(videoStatus);
+      if (v === 'waiting') {
+        where.push("lower(trim(coalesce(r.video_status, ''))) IN ('等待', '下载中', 'waiting', 'pending', 'processing', 'running', 'queue', 'queued', 'downloading')");
+      } else if (v === 'failed') {
+        where.push("r.video_status LIKE '失败%'");
+      } else if (v === 'success') {
+        where.push("r.video_status = '成功'");
+      } else if (v === 'none') {
+        where.push("(r.video_status IS NULL OR trim(r.video_status) = '')");
+      }
     }
-    if (where.length) {
-      sql += ' WHERE ' + where.join(' AND ');
-    }
-    sql += ' ORDER BY r.scanned_at DESC, r.id DESC';
-    const limit = Math.max(1, Number(pageSize) || 10);
+    where.push(onlyDeleted ? 'r.deleted = 1' : 'r.deleted = 0');
+
+    // 以自增 id 为主序，避免系统时间回拨导致新记录沉底。
+    // pageSize='all' → 不分页，一次取全部
+    const limit = pageSize === 'all' ? 1000000 : Math.max(1, Number(pageSize) || 10);
     const offset = Math.max(0, (Number(page) - 1) * limit);
-    sql += ` LIMIT ${limit} OFFSET ${offset}`;
-
-    const result = this.db.exec(sql, params);
-    if (result.length === 0) return [];
-    const { columns, values } = result[0];
-    return values.map((row) => {
-      const obj = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    const sql = `SELECT ${RECORD_SELECT_FIELDS} ${RECORD_FROM}`
+      + (where.length ? ' WHERE ' + where.join(' AND ') : '')
+      + ' ORDER BY r.id DESC LIMIT @limit OFFSET @offset';
+    params.limit = limit;
+    params.offset = offset;
+    return this._stmt(sql).all(params);
   }
 
-  countRecords({ keyword, date, deviceId, onlyDeleted = false }) {
-    let sql = 'SELECT COUNT(1) as total FROM scan_records r';
-    const params = [];
+  countRecords({ keyword, date, dateFrom, dateTo, deviceId, onlyDeleted = false, videoStatus = '' }) {
     const where = [];
+    const params = {};
+
     if (keyword) {
-      where.push('r.barcode LIKE ?');
-      params.push(`%${keyword}%`);
+      where.push('r.barcode LIKE @keyword');
+      params.keyword = `%${keyword}%`;
     }
     if (date) {
-      where.push("date(r.scanned_at) = ?");
-      params.push(date);
+      where.push('date(r.scanned_at) = @date');
+      params.date = date;
+    }
+    if (dateFrom) {
+      where.push('date(r.scanned_at) >= @dateFrom');
+      params.dateFrom = dateFrom;
+    }
+    if (dateTo) {
+      where.push('date(r.scanned_at) <= @dateTo');
+      params.dateTo = dateTo;
     }
     if (deviceId != null && deviceId !== '') {
       const safeDeviceId = Number(deviceId);
       if (Number.isFinite(safeDeviceId)) {
-        where.push('r.device_id = ?');
-        params.push(safeDeviceId);
+        where.push('r.device_id = @deviceId');
+        params.deviceId = safeDeviceId;
       }
     }
-    if (onlyDeleted) {
-      where.push('r.deleted = 1');
-    } else {
-      where.push('r.deleted = 0');
+    if (videoStatus) {
+      const v = String(videoStatus);
+      if (v === 'waiting') {
+        where.push("lower(trim(coalesce(r.video_status, ''))) IN ('等待', '下载中', 'waiting', 'pending', 'processing', 'running', 'queue', 'queued', 'downloading')");
+      } else if (v === 'failed') {
+        where.push("r.video_status LIKE '失败%'");
+      } else if (v === 'success') {
+        where.push("r.video_status = '成功'");
+      } else if (v === 'none') {
+        where.push("(r.video_status IS NULL OR trim(r.video_status) = '')");
+      }
     }
-    if (where.length) {
-      sql += ' WHERE ' + where.join(' AND ');
-    }
-    const result = this.db.exec(sql, params);
-    return result[0]?.values?.[0]?.[0] || 0;
+    where.push(onlyDeleted ? 'r.deleted = 1' : 'r.deleted = 0');
+
+    const sql = 'SELECT COUNT(1) as total FROM scan_records r'
+      + (where.length ? ' WHERE ' + where.join(' AND ') : '');
+    return this._stmt(sql).get(params).total || 0;
   }
 
   listDevices() {
-    const result = this.db.exec(
+    return this._stmt(
       `SELECT id, name, type, identifier, video_device_id, channel_id, host, port, enabled, created_at, updated_at
        FROM scanner_devices
        ORDER BY enabled DESC, id DESC;`
-    );
-    if (result.length === 0) return [];
-    const { columns, values } = result[0];
-    return values.map((row) => {
-      const obj = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    ).all();
   }
 
   addDevice({ name, type = 'tcp', identifier, video_device_id = null, channel_id = '', host = '', port = 0, enabled = 1 }) {
@@ -358,38 +334,24 @@ class Database {
     const safeHost = String(host || '').trim();
     const safePort = Number(port);
     const safeEnabled = enabled ? 1 : 0;
-    
+
     if (!safeIdentifier) return { ok: false, message: 'empty identifier' };
-    
-    this.db.run(
+
+    const info = this._stmt(
       `INSERT INTO scanner_devices (name, type, identifier, video_device_id, channel_id, host, port, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
-      [safeName, safeType, safeIdentifier, hasVideoDeviceId, safeChannelId, safeHost, safePort, safeEnabled]
-    );
-    const last = this.db.exec('SELECT last_insert_rowid() as id;');
-    const id = last[0]?.values?.[0]?.[0];
-    this.save();
-    if (id == null) return { ok: true };
-    return { ok: true, device: this.getDeviceById(id) };
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?);`
+    ).run(safeName, safeType, safeIdentifier, hasVideoDeviceId, safeChannelId, safeHost, safePort, safeEnabled);
+    return { ok: true, device: this.getDeviceById(info.lastInsertRowid) };
   }
 
   getDeviceById(id) {
     const safeId = Number(id);
     if (!Number.isFinite(safeId)) return null;
-    const result = this.db.exec(
+    return this._stmt(
       `SELECT id, name, type, identifier, video_device_id, channel_id, host, port, enabled, created_at, updated_at
        FROM scanner_devices
-       WHERE id = ?;`,
-      [safeId]
-    );
-    if (result.length === 0) return null;
-    const { columns, values } = result[0];
-    const row = values[0];
-    const obj = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj;
+       WHERE id = ?;`
+    ).get(safeId) || null;
   }
 
   updateDevice(id, { name, type, identifier, video_device_id, channel_id, host, port, enabled }) {
@@ -413,77 +375,54 @@ class Database {
 
     if (!nextIdentifier) return { ok: false, message: 'empty identifier' };
 
-    this.db.run(
+    this._stmt(
       `UPDATE scanner_devices
        SET name = ?, type = ?, identifier = ?, video_device_id = ?, channel_id = ?, host = ?, port = ?, enabled = ?, updated_at = datetime('now', 'localtime')
-       WHERE id = ?;`,
-      [nextName, nextType, nextIdentifier, hasVideoDeviceId, nextChannelId, nextHost, nextPort, nextEnabled, safeId]
-    );
-    this.save();
+       WHERE id = ?;`
+    ).run(nextName, nextType, nextIdentifier, hasVideoDeviceId, nextChannelId, nextHost, nextPort, nextEnabled, safeId);
     return { ok: true, device: this.getDeviceById(safeId) };
   }
 
   deleteDevice(id) {
     const safeId = Number(id);
     if (!Number.isFinite(safeId)) return { ok: false, message: 'invalid id' };
-    this.db.run('DELETE FROM scanner_devices WHERE id = ?;', [safeId]);
-    this.save();
+    this._stmt('DELETE FROM scanner_devices WHERE id = ?;').run(safeId);
     return { ok: true };
   }
 
   getSetting(key) {
     const safeKey = String(key || '').trim();
     if (!safeKey) return null;
-    const result = this.db.exec('SELECT value FROM app_settings WHERE key = ?;', [safeKey]);
-    return result[0]?.values?.[0]?.[0] ?? null;
+    const row = this._stmt('SELECT value FROM app_settings WHERE key = ?;').get(safeKey);
+    return row ? row.value : null;
   }
 
   setSetting(key, value) {
     const safeKey = String(key || '').trim();
     if (!safeKey) return { ok: false, message: 'empty key' };
     const safeValue = value == null ? null : String(value);
-    this.db.run(
-      "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'));",
-      [safeKey, safeValue]
-    );
-    this.save();
+    this._stmt(
+      "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, datetime('now', 'localtime'));"
+    ).run(safeKey, safeValue);
     return { ok: true };
   }
 
   listVideoDevices() {
-    const result = this.db.exec(
+    return this._stmt(
       `SELECT id, name, base_url, username, password, extra_json, enabled, created_at, updated_at
        FROM video_devices
        ORDER BY enabled DESC, id DESC;`
-    );
-    if (result.length === 0) return [];
-    const { columns, values } = result[0];
-    return values.map((row) => {
-      const obj = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    ).all();
   }
 
   getVideoDeviceById(id) {
     const safeId = Number(id);
     if (!Number.isFinite(safeId)) return null;
-    const result = this.db.exec(
+    return this._stmt(
       `SELECT id, name, base_url, username, password, extra_json, enabled, created_at, updated_at
        FROM video_devices
-       WHERE id = ?;`,
-      [safeId]
-    );
-    if (result.length === 0) return null;
-    const { columns, values } = result[0];
-    const row = values[0];
-    const obj = {};
-    columns.forEach((col, idx) => {
-      obj[col] = row[idx];
-    });
-    return obj;
+       WHERE id = ?;`
+    ).get(safeId) || null;
   }
 
   addVideoDevice({ name, base_url = '', username = '', password = '', extra = null, enabled = 1 }) {
@@ -495,21 +434,17 @@ class Database {
     const safeExtraJson = extra == null ? null : JSON.stringify(extra);
     const safeEnabled = enabled ? 1 : 0;
 
-    this.db.run(
+    const info = this._stmt(
       `INSERT INTO video_devices (name, base_url, username, password, extra_json, enabled)
-       VALUES (?, ?, ?, ?, ?, ?);`,
-      [safeName, safeBaseUrl, safeUsername, safePassword, safeExtraJson, safeEnabled]
-    );
-    const last = this.db.exec('SELECT last_insert_rowid() as id;');
-    const id = last[0]?.values?.[0]?.[0];
-    this.save();
-    if (id == null) return { ok: true };
-    return { ok: true, device: this.getVideoDeviceById(id) };
+       VALUES (?, ?, ?, ?, ?, ?);`
+    ).run(safeName, safeBaseUrl, safeUsername, safePassword, safeExtraJson, safeEnabled);
+    return { ok: true, device: this.getVideoDeviceById(info.lastInsertRowid) };
   }
 
   updateVideoDevice(id, { name, base_url, username, password, extra, enabled }) {
     const safeId = Number(id);
     if (!Number.isFinite(safeId)) return { ok: false, message: 'invalid id' };
+
     const existing = this.getVideoDeviceById(safeId);
     if (!existing) return { ok: false, message: 'not found' };
 
@@ -522,23 +457,20 @@ class Database {
       extra === undefined ? existing.extra_json : extra == null ? null : JSON.stringify(extra);
     const nextEnabled = enabled === undefined ? Number(existing.enabled) : enabled ? 1 : 0;
 
-    this.db.run(
+    this._stmt(
       `UPDATE video_devices
        SET name = ?, base_url = ?, username = ?, password = ?, extra_json = ?, enabled = ?, updated_at = datetime('now', 'localtime')
-       WHERE id = ?;`,
-      [nextName, nextBaseUrl, nextUsername, nextPassword, nextExtraJson, nextEnabled, safeId]
-    );
-    this.save();
+       WHERE id = ?;`
+    ).run(nextName, nextBaseUrl, nextUsername, nextPassword, nextExtraJson, nextEnabled, safeId);
     return { ok: true, device: this.getVideoDeviceById(safeId) };
   }
 
   deleteVideoDevice(id) {
     const safeId = Number(id);
     if (!Number.isFinite(safeId)) return { ok: false, message: 'invalid id' };
-    this.db.run('DELETE FROM video_devices WHERE id = ?;', [safeId]);
-    this.save();
+    this._stmt('DELETE FROM video_devices WHERE id = ?;').run(safeId);
     return { ok: true };
   }
 }
 
-module.exports = { Database };
+module.exports = { Database: AppDatabase };
