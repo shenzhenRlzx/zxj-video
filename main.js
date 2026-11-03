@@ -1142,12 +1142,11 @@ class ScannerManager {
         const prev = this.unknownClients.get(ip);
         this.unknownClients.set(ip, {
           count: Math.min((prev?.count || 0) + 1, 999), // 封顶，避免扫码枪频繁重连导致计数无限涨
-          lastSeen: new Date().toISOString(),
-          loggedAt: prev?.loggedAt || 0
+          lastSeen: new Date().toISOString()
         });
-        // 同一 IP 5 分钟只记一条日志/弹一次提示，防止扫码枪频繁重连把运行日志刷屏
-        if (Date.now() - (prev?.loggedAt || 0) > 5 * 60 * 1000) {
-          this.unknownClients.get(ip).loggedAt = Date.now();
+        // 同一 IP 只在首次出现时记一条日志/弹一次提示，之后持续重连完全静默；
+        // 待 1 小时无连接被 watchdog 清除后若再连，才会再记一条
+        if (!prev) {
           console.warn(`[TCP Server] 收到未知设备连接: ${ip}，已拒绝。请检查扫码枪 IP 是否变化，或在工作台管理中添加该 IP`);
           showToast(`未知设备尝试连接: ${ip}`);
         }
