@@ -1176,7 +1176,12 @@ class ScannerManager {
         last_seen_at: new Date().toISOString()
       };
       this.setState(id, { state: 'connected', lastError: null });
-      showToast(`已连接: ${buildDeviceName(matchedDeviceEntry.device)}`);
+      // 同一设备 30 秒内只弹一次「已连接」，防止扫码枪网络抖动反复重连时 toast 刷屏
+      const nowMs = Date.now();
+      if (!matchedDeviceEntry.lastConnectedToastAt || nowMs - matchedDeviceEntry.lastConnectedToastAt > 30 * 1000) {
+        matchedDeviceEntry.lastConnectedToastAt = nowMs;
+        showToast(`已连接: ${buildDeviceName(matchedDeviceEntry.device)}`);
+      }
 
       socket.on('data', (chunk) => {
         const e = this.devices.get(id);
@@ -1217,7 +1222,11 @@ class ScannerManager {
     });
 
     this.tcpServer.on('error', (err) => {
-      console.error(`[TCP Server] 错误: ${err.message}`);
+      // 端口被占等持续性错误每 5 秒重试一次；只在第一次记日志，避免每 5 秒刷一条错误
+      if (!this.tcpServerErrorLogged) {
+        this.tcpServerErrorLogged = true;
+        console.error(`[TCP Server] 错误: ${err.message}（端口可能被占用，将每 5 秒自动重试，成功后恢复静默）`);
+      }
       setTimeout(() => {
         if (this.tcpServer) {
           this.tcpServer.close();
@@ -1228,6 +1237,7 @@ class ScannerManager {
     });
 
     this.tcpServer.listen(this.tcpServerPort, '0.0.0.0', () => {
+      this.tcpServerErrorLogged = false;
       console.log(`[TCP Server] 监听端口 ${this.tcpServerPort}`);
     });
   }
@@ -1409,7 +1419,11 @@ class ScannerManager {
           last_seen_at: new Date().toISOString()
         };
         this.setState(id, { state: 'connected', lastError: null });
-        showToast(`已连接: ${buildDeviceName(d)}`);
+        const openMs = Date.now();
+        if (!entry.lastConnectedToastAt || openMs - entry.lastConnectedToastAt > 30 * 1000) {
+          entry.lastConnectedToastAt = openMs;
+          showToast(`已连接: ${buildDeviceName(d)}`);
+        }
       });
 
       sp.on('data', (chunk) => {
