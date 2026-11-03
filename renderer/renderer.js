@@ -89,12 +89,14 @@ function setLatest(record) {
 // ============ 多选操作 ============
 const selectAllCheckboxEl = document.getElementById('selectAllCheckbox');
 const batchDeleteBtnEl = document.getElementById('batchDeleteBtn');
+const batchRetryVideoBtnEl = document.getElementById('batchRetryVideoBtn');
 const selectedCountHintEl = document.getElementById('selectedCountHint');
 const selectedIds = new Set();
 
 function updateBatchButtons() {
   const n = selectedIds.size;
   if (batchDeleteBtnEl) batchDeleteBtnEl.disabled = n === 0;
+  if (batchRetryVideoBtnEl) batchRetryVideoBtnEl.disabled = n === 0;
   if (selectedCountHintEl) selectedCountHintEl.textContent = n > 0 ? `已选 ${n} 条` : '';
 }
 
@@ -396,6 +398,20 @@ batchDeleteBtnEl?.addEventListener('click', async () => {
   showToast(`已删除 ${okCount}/${ids.length} 条`);
   clearSelection();
   await loadRecords();
+});
+
+batchRetryVideoBtnEl?.addEventListener('click', async () => {
+  const ids = Array.from(selectedIds);
+  if (!ids.length) return;
+  if (!confirm(`对选中的 ${ids.length} 条记录重新提交录像下载？（已成功的会自动跳过，每条间隔 8 秒）`)) return;
+  const result = await window.api.retryVideoIds?.(ids);
+  if (result?.ok) {
+    showToast(result.submitted > 0 ? `已提交 ${result.submitted} 条补下载，结果稍后刷新可见` : '选中的记录都不需要补下载（已成功或已下载）');
+    clearSelection();
+    scheduleReload();
+  } else {
+    showToast('批量补下载失败，请查看日志');
+  }
 });
 
 retryVideoBatchBtnEl?.addEventListener('click', async () => {
