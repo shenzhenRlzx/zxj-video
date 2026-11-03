@@ -505,7 +505,7 @@ function renderVideoDevices() {
     row.addEventListener('click', () => {
       currentId = Number(d.id);
       applyForm(d);
-      if (channelListDeviceId !== currentId) resetChannelList('点击「创建通道列表」加载当前设备的通道');
+      if (channelListDeviceId !== currentId) resetChannelList('');
       renderVideoDevices();
     });
 
@@ -553,7 +553,7 @@ function renderVideoDevices() {
       e.stopPropagation();
       currentId = Number(d.id);
       applyForm(d);
-      if (channelListDeviceId !== currentId) resetChannelList('点击「创建通道列表」加载当前设备的通道');
+      if (channelListDeviceId !== currentId) resetChannelList('');
       renderVideoDevices();
     });
     actionCell.appendChild(editBtn);
@@ -679,7 +679,7 @@ saveBtnEl?.addEventListener('click', async () => {
     const latest = videoDevices.find((v) => Number(v.id) === currentId) || null;
     applyForm(latest);
   }
-  resetChannelList('点击「创建通道列表」加载当前设备的通道');
+  resetChannelList('');
 });
 
 loadChannelsBtnEl?.addEventListener('click', async () => {
