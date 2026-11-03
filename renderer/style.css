@@ -276,6 +276,14 @@ body {
 .channel-item:last-child {
   border-bottom: none;
 }
+
+.channel-list-source {
+  font-size: 12px;
+  color: #a09a8c;
+  padding: 2px 0 6px 0;
+  border-bottom: 1px dashed var(--line);
+  margin-bottom: 4px;
+}
 .channel-info {
   display: flex;
   flex-direction: column;

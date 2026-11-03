@@ -19,6 +19,7 @@ const channelListEl = document.getElementById('channelList');
 let videoDevices = [];
 let currentId = null;
 let videoConfig = { clipBeforeSeconds: 5, clipAfterSeconds: 55 };
+let channelListDeviceId = null; // 通道列表属于哪台设备；切换设备时清空，避免显示上一台的通道
 let liveFlvPlayer = null;
 let liveCurrentChannel = null;
 let liveCurrentOrigin = null;
@@ -475,6 +476,11 @@ async function loadVideoDevices() {
   renderVideoDevices();
 }
 
+function resetChannelList(message) {
+  channelListDeviceId = null;
+  if (channelListEl) channelListEl.textContent = message || '';
+}
+
 function renderVideoDevices() {
   if (!videoDevicesBodyEl) return;
   videoDevicesBodyEl.innerHTML = '';
@@ -499,6 +505,7 @@ function renderVideoDevices() {
     row.addEventListener('click', () => {
       currentId = Number(d.id);
       applyForm(d);
+      if (channelListDeviceId !== currentId) resetChannelList('点击「创建通道列表」加载当前设备的通道');
       renderVideoDevices();
     });
 
@@ -546,6 +553,7 @@ function renderVideoDevices() {
       e.stopPropagation();
       currentId = Number(d.id);
       applyForm(d);
+      if (channelListDeviceId !== currentId) resetChannelList('点击「创建通道列表」加载当前设备的通道');
       renderVideoDevices();
     });
     actionCell.appendChild(editBtn);
@@ -565,6 +573,7 @@ function renderVideoDevices() {
       if (currentId === Number(d.id)) {
         currentId = null;
         applyForm(null);
+        resetChannelList('');
       }
       await loadVideoDevices();
     });
@@ -578,6 +587,7 @@ function renderVideoDevices() {
 newBtnEl?.addEventListener('click', () => {
   currentId = null;
   applyForm(null);
+  resetChannelList('');
 });
 
 deleteBtnEl?.addEventListener('click', async () => {
@@ -669,6 +679,7 @@ saveBtnEl?.addEventListener('click', async () => {
     const latest = videoDevices.find((v) => Number(v.id) === currentId) || null;
     applyForm(latest);
   }
+  resetChannelList('点击「创建通道列表」加载当前设备的通道');
 });
 
 loadChannelsBtnEl?.addEventListener('click', async () => {
@@ -724,7 +735,12 @@ loadChannelsBtnEl?.addEventListener('click', async () => {
     return;
   }
   if (channelListEl) {
+    channelListDeviceId = Number(currentId);
     channelListEl.innerHTML = '';
+    const sourceDiv = document.createElement('div');
+    sourceDiv.className = 'channel-list-source';
+    sourceDiv.textContent = `来源设备: ${current?.name || '--'} (${current?.base_url || '--'})`;
+    channelListEl.appendChild(sourceDiv);
     list.forEach((ch) => {
       const name = ch.name ? ` (${ch.name})` : '';
       const flv = ch.flv || '';
