@@ -26,8 +26,9 @@ const alertBarEl = document.getElementById('alertBar');
 const alertTextEl = document.getElementById('alertText');
 const appStartedAt = Date.now();
 
-// 常驻告警条：仅断链 / 连接异常 / 未知设备才红条告警；
+// 常驻告警条：仅断链 / 连接异常才红条告警；未知设备降级为角落小灰字（详情看工作台管理页）；
 // 「长时间无数据」属于在线空闲提示，不在首页告警（状态详情看工作台管理页）
+const unknownHintEl = document.getElementById('unknownHint');
 function updateAlertBar(info) {
   if (!alertBarEl || !alertTextEl) return;
   const devices = Array.isArray(info?.devices) ? info.devices : [];
@@ -41,15 +42,20 @@ function updateAlertBar(info) {
       if (Date.now() - appStartedAt > 30000) problems.push(`${d.name} 未连接`);
     }
   }
-  const unknown = Array.isArray(info?.unknownClients) ? info.unknownClients : [];
-  if (unknown.length) {
-    problems.push(`未知设备尝试连接: ${unknown.map((u) => u.ip).join('、')}`);
-  }
   if (problems.length) {
     alertTextEl.textContent = problems.join('；');
     alertBarEl.classList.remove('hidden');
   } else {
     alertBarEl.classList.add('hidden');
+  }
+  if (unknownHintEl) {
+    const unknown = Array.isArray(info?.unknownClients) ? info.unknownClients : [];
+    if (unknown.length) {
+      unknownHintEl.textContent = `未知设备连接: ${unknown.map((u) => u.ip).join('、')}（点击查看）`;
+      unknownHintEl.classList.remove('hidden');
+    } else {
+      unknownHintEl.classList.add('hidden');
+    }
   }
 }
 

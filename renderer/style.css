@@ -649,6 +649,32 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+/* 未知设备降级提示：不弹眼的角落小灰字，点击跳工作台管理页 */
+.unknown-hint {
+  display: block;
+  margin: -4px 24px 12px 24px;
+  padding: 2px 4px;
+  color: #a09a8c;
+  font-size: 12px;
+  text-align: right;
+  text-decoration: none;
+}
+
+.unknown-hint:hover {
+  color: #6b665c;
+  text-decoration: underline;
+}
+
+.unknown-hint.hidden {
+  display: none;
+}
+
+/* 工作台管理页内嵌在卡片中：左对齐、去掉首页的外边距 */
+.devices-card .unknown-hint {
+  margin: 0 0 8px 0;
+  text-align: left;
+}
+
 .toast {
   position: fixed;
   left: 50%;
