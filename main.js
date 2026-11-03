@@ -262,7 +262,7 @@ function notifyRecordVideoUpdatedNow(recordId) {
 
 // 统一：任何一次下载/重试提交，写状态并清空旧失败原因，立即通知。
 // status：时间窗未结束时的「等待」（等录像生成），真正提交后端后的「下载中」
-function markVideoSubmitted(recordId, taskId, status = '下载中', message = null) {
+function markVideoSubmitted(recordId, taskId, status = '等待', message = null) {
   const safeId = Number(recordId);
   if (!Number.isFinite(safeId) || !db) return;
   // 计数不在这里重置：轮询超时触发的自动重试用它防止无限重试；
@@ -480,8 +480,8 @@ function normalizeVideoStatus(raw) {
   if (s === '成功' || ['success', 'ok', 'done', 'completed', 'complete', 'true', '1'].includes(lower)) return '成功';
   if (s === '失败' || ['fail', 'failed', 'error', 'false', '0'].includes(lower)) return '失败';
   if (s === '等待' || ['waiting', 'pending', 'queue', 'queued'].includes(lower)) return '等待';
-  if (s === '等待' || ['waiting', 'pending', 'queue', 'queued'].includes(lower)) return '等待';
-  if (s === '下载中' || ['downloading', 'download', 'running', 'processing'].includes(lower)) return '下载中';
+  // 后端只区分：未完成=等待、成功、失败；「下载中」仅作旧数据兼容归一到等待
+  if (s === '等待' || s === '下载中' || ['waiting', 'pending', 'queue', 'queued', 'downloading', 'download', 'running', 'processing'].includes(lower)) return '等待';
   return s;
 }
 
@@ -689,7 +689,7 @@ function startVideoStatusPolling(recordId, backendUrl, endMs, taskId) {
           const count = videoRetryCounts.get(safeId) || 0;
           if (count < 1) {
             videoRetryCounts.set(safeId, count + 1);
-            db.setRecordVideoInfo(safeId, { status: '下载中', backendId, videoPath: null, message: '后端返回失败，自动重试中' });
+            db.setRecordVideoInfo(safeId, { status: '等待', backendId, videoPath: null, message: '后端返回失败，自动重试中' });
             notifyRecordVideoUpdated(safeId);
             if (current.timer) clearTimeout(current.timer);
             videoStatusPollers.delete(safeId);
@@ -706,7 +706,7 @@ function startVideoStatusPolling(recordId, backendUrl, endMs, taskId) {
           return;
         }
 
-        setVideoStatusIfChanged(safeId, '下载中', backendId, info?.message ?? null);
+        setVideoStatusIfChanged(safeId, '等待', backendId, info?.message ?? null);
 
         current.timer = setTimeout(pollOnce, 10000);
       })
@@ -974,7 +974,7 @@ function downloadVideo(scannerDevice, record, { backendUrl, taskId, isRetry } = 
       // 时间窗已结束才到这里：此时提交才是真正「下载中」，记录离开「视频等待中」的语义清晰
       if (Number.isFinite(recordId)) {
         if (shouldIgnoreVideoUpdate(recordId, taskIdStr)) return; // 期间已被新任务覆盖或已成功
-        markVideoSubmitted(recordId, chosenTaskId, '下载中');
+        markVideoSubmitted(recordId, chosenTaskId, '等待');
       }
       requestVideoInfoFromBackend(url.toString(), finalBackendUrl)
       .then((info) => {
@@ -993,7 +993,7 @@ function downloadVideo(scannerDevice, record, { backendUrl, taskId, isRetry } = 
             // 后端已接收任务：保持「下载中」交给轮询确认，不立刻打回「失败」，
             // 最终失败由轮询写明原因（timeout / 后端失败），避免「点重试又秒回失败」
             db.setRecordVideoInfo(recordId, {
-              status: '下载中',
+              status: '等待',
               backendId: taskIdStr,
               videoPath: null,
               message: status === '失败' ? `后端返回失败，轮询确认中: ${info?.message || '无原因'}` : (info?.message ?? null)
