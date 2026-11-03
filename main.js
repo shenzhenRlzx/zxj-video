@@ -1071,6 +1071,14 @@ class ScannerManager {
   runWatchdog() {
     try {
       const now = Date.now();
+      // 未知设备超过 1 小时没有再尝试连接 → 从列表清除，首页提示随之消失
+      for (const [ip, v] of this.unknownClients) {
+        const seen = Date.parse(v.lastSeen);
+        if (!Number.isFinite(seen) || now - seen > 60 * 60 * 1000) {
+          this.unknownClients.delete(ip);
+          this.broadcast();
+        }
+      }
       for (const entry of this.devices.values()) {
         if (entry.state !== 'connected' && entry.state !== 'stale') continue;
         const lastSeenRaw = entry.client?.last_seen_at;
@@ -1133,7 +1141,7 @@ class ScannerManager {
       if (!matchedDeviceEntry) {
         const prev = this.unknownClients.get(ip);
         this.unknownClients.set(ip, {
-          count: (prev?.count || 0) + 1,
+          count: Math.min((prev?.count || 0) + 1, 999), // 封顶，避免扫码枪频繁重连导致计数无限涨
           lastSeen: new Date().toISOString()
         });
         console.warn(`[TCP Server] 收到未知设备连接: ${ip}，已拒绝。请检查扫码枪 IP 是否变化，或在工作台管理中添加该 IP`);
