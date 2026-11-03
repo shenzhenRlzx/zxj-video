@@ -399,7 +399,7 @@ batchDeleteBtnEl?.addEventListener('click', async () => {
 });
 
 retryVideoBatchBtnEl?.addEventListener('click', async () => {
-  if (!confirm('将对当前筛选条件下“没有视频且未成功”的记录（最多 300 条）重新提交录像下载。\n\n提示：可先在“视频状态”里筛选“视频失败”或“无视频状态”后再执行。\n\n确定继续吗？')) {
+  if (!confirm('将对当前筛选条件下“没有视频且未成功”的记录重新提交录像下载（最多 50 条，每条间隔 8 秒，防止监控设备登录锁定）。\n\n提示：可先在“视频状态”里筛选“视频失败”或“无视频状态”后再执行。\n\n确定继续吗？')) {
     return;
   }
   const result = await window.api.retryVideoBatch({

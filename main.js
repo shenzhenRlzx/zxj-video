@@ -785,14 +785,15 @@ function restorePendingVideoTasks() {
   });
 }
 
-// 旧版曾因「单号格式不符」被跳过下载的记录，升级后按转换后的单号自动重新提交
+// 旧版曾因「单号格式不符」被跳过下载的记录，升级后按转换后的单号自动重新提交。
+// 必须限流：每个任务都要登录一次 NVR，密集请求会触发海康设备的连接数限制/防暴力锁定（lUserID=-1）
 function resubmitPreviouslySkippedRecords() {
   if (!db) return;
   try {
-    const rows = db.queryRecords({ videoStatus: 'failed', page: 1, pageSize: 300, onlyDeleted: false });
+    const rows = db.queryRecords({ videoStatus: 'failed', page: 1, pageSize: 20, onlyDeleted: false });
     const skipped = rows.filter((r) => String(r.video_message || '').includes('单号格式不符，未提交下载'));
     if (!skipped.length) return;
-    console.log(`[VideoRetry] 自动补提交历史被跳过的记录 ${skipped.length} 条`);
+    console.log(`[VideoRetry] 自动补提交历史被跳过的记录 ${skipped.length} 条（每条间隔 8 秒，防止 NVR 登录锁定）`);
     const backendUrl = getVideoBackendUrl();
     skipped.forEach((r, idx) => {
       setTimeout(() => {
@@ -803,7 +804,7 @@ function resubmitPreviouslySkippedRecords() {
         } catch (e) {
           console.error(`[VideoRetry] 自动补提交单条失败(id=${r.id}): ${e?.message || e}`);
         }
-      }, 2000 + idx * 500);
+      }, 5000 + idx * 8000);
     });
   } catch (e) {
     console.error(`[VideoRetry] 自动补提交失败: ${e?.message || e}`);
@@ -2065,13 +2066,13 @@ ipcMain.handle('retry-video-batch', (event, params) => {
     onlyDeleted: false,
     videoStatus: filter.videoStatus || '',
     page: 1,
-    pageSize: 300
+    pageSize: 50
   });
   const candidates = rows.filter((r) => !r.deleted && !String(r.video_path || '').trim() && String(r.video_status || '') !== '成功');
   if (!candidates.length) return { ok: true, submitted: 0 };
 
   console.log(`[VideoRetry] 批量补下载 ${candidates.length} 条（按当前筛选条件）`);
-  showToast(`正在补下载 ${candidates.length} 条视频…`);
+  showToast(`正在补下载 ${candidates.length} 条视频…（每条间隔 8 秒，防止 NVR 登录锁定）`);
   candidates.forEach((r, idx) => {
     setTimeout(() => {
       try {
@@ -2081,7 +2082,7 @@ ipcMain.handle('retry-video-batch', (event, params) => {
       } catch (e) {
         console.error(`[VideoRetry] 补下载单条失败(id=${r.id}): ${e?.message || e}`);
       }
-    }, 500 + idx * 500);
+    }, 3000 + idx * 8000);
   });
   return { ok: true, submitted: candidates.length };
 });
@@ -2113,7 +2114,7 @@ ipcMain.handle('retry-video-ids', (event, params) => {
       } catch (e) {
         console.error(`[VideoRetry] 补下载单条失败(id=${r.id}): ${e?.message || e}`);
       }
-    }, 500 + idx * 500);
+    }, 3000 + idx * 8000);
   });
   return { ok: true, submitted: candidates.length };
 });
