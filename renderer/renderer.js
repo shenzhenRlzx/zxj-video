@@ -8,7 +8,6 @@ const statusSelectEl = document.getElementById('statusSelect');
 const searchBtnEl = document.getElementById('searchBtn');
 const resetBtnEl = document.getElementById('resetBtn');
 const exportBtnEl = document.getElementById('exportBtn');
-const retryVideoBatchBtnEl = document.getElementById('retryVideoBatchBtn');
 const simulateBtnEl = document.getElementById('simulateBtn');
 const flashEl = document.getElementById('flash');
 const latestCardEl = document.querySelector('.latest-card');
@@ -411,25 +410,6 @@ batchRetryVideoBtnEl?.addEventListener('click', async () => {
     scheduleReload();
   } else {
     showToast('批量补下载失败，请查看日志');
-  }
-});
-
-retryVideoBatchBtnEl?.addEventListener('click', async () => {
-  if (!confirm('将对当前筛选条件下“没有视频且未成功”的记录重新提交录像下载（最多 50 条，每条间隔 8 秒，防止监控设备登录锁定）。\n\n提示：可先在“视频状态”里筛选“视频失败”或“无视频状态”后再执行。\n\n确定继续吗？')) {
-    return;
-  }
-  const result = await window.api.retryVideoBatch({
-    keyword: searchInputEl.value.trim() || null,
-    dateFrom: dateFromInputEl.value || null,
-    dateTo: dateToInputEl.value || null,
-    deviceId: deviceFilterSelectEl ? deviceFilterSelectEl.value : '',
-    videoStatus: videoStatusSelectEl ? videoStatusSelectEl.value : ''
-  });
-  if (result?.ok) {
-    showToast(result.submitted > 0 ? `已提交 ${result.submitted} 条补下载，结果稍后刷新可见` : '当前筛选条件下没有需要补下载的记录');
-    scheduleReload();
-  } else {
-    showToast('补下载失败，请查看日志');
   }
 });
 
