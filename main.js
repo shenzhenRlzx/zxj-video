@@ -3,10 +3,10 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const { Database } = require('./database');
+const { localTimestamp } = require('./utils');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-const { buildRtspUrl } = require('./hikvision');
 const util = require('util');
 
 let SerialPort = null;
@@ -37,10 +37,36 @@ function logFilePath(day) {
   return path.join(logDir, `app-${day}.log`);
 }
 
+const LOG_RETENTION_DAYS = 365; // 日志保留天数，超期自动清理
+let lastLogDay = '';            // 跨天时触发一次过期日志清理
+
+// 删除保留期外的旧日志（app-YYYY-MM-DD.log，按本地日期命名）
+function cleanupOldLogs() {
+  if (!logDir) return;
+  try {
+    const cutoffDate = new Date(); // 按自然日对齐：保留今天起往前 365 个自然日
+    cutoffDate.setDate(cutoffDate.getDate() - LOG_RETENTION_DAYS);
+    cutoffDate.setHours(0, 0, 0, 0);
+    const cutoff = cutoffDate.getTime();
+    for (const name of fs.readdirSync(logDir)) {
+      const m = name.match(/^app-(\d{4}-\d{2}-\d{2})\.log$/);
+      if (!m) continue;
+      const fileTs = Date.parse(`${m[1]}T00:00:00`); // 无时区标记 → 按本地时间解析
+      if (Number.isFinite(fileTs) && fileTs < cutoff) {
+        try { fs.unlinkSync(path.join(logDir, name)); } catch (e) { } // 文件被占用等场景忽略，下次跨天再试
+      }
+    }
+  } catch (e) { }
+}
+
 function writeLogEntry(entry) {
   if (!logDir) return;
   try {
     const day = entry.ts.slice(0, 10);
+    if (day !== lastLogDay) {
+      lastLogDay = day;
+      cleanupOldLogs(); // 每天第一条日志时清理一次过期日志
+    }
     fs.appendFileSync(logFilePath(day), `[${entry.ts}] [${String(entry.level || 'info').toUpperCase()}] ${entry.message}\n`);
   } catch (e) { }
 }
@@ -49,6 +75,7 @@ function initLogger() {
   try {
     logDir = path.join(app.getPath('userData'), 'logs');
     fs.mkdirSync(logDir, { recursive: true });
+    cleanupOldLogs();
     for (const entry of logEntries) writeLogEntry(entry);
   } catch (e) {
     logDir = null;
@@ -58,7 +85,7 @@ function initLogger() {
 function addLog(level, message) {
   const entry = {
     id: ++logSeq,
-    ts: new Date().toISOString(),
+    ts: localTimestamp(),
     level: String(level || 'info'),
     message: String(message || '')
   };
@@ -487,8 +514,8 @@ function normalizeVideoStatus(raw) {
 
 // ============ 提交给视频后端前的单号转换 ============
 // 依据（项目内实际约束）：
-//   hikvision.js 把 expressNo 当 fileName 直接 path.join(saveDir, fileName)；
-//   expressNo 同时走 /findByFree 的 URL 查询串；海康 ISAPI 使用 XML 报文。
+//   expressNo 走 /findByFree 的 URL 查询串，后端以它生成文件名（sanitizeName）；
+//   海康 ISAPI 使用 XML 报文。
 // 规则（最简）：
 //   1. 本来就安全（只含字母数字/连字符/下划线）→ 原样传（含尾部 -）
 //   2. 只有歧义字符（\ / : * ? " < > | # % & = + '，文件名/路径/URL/XML 冲突）→ 转义成 '-' 后传
@@ -597,7 +624,7 @@ function stopVideoPolling(recordId) {
   videoRetryCounts.delete(safeId);
 }
 
-function shouldIgnoreVideoUpdate(recordId, expectedTaskId) {
+function shouldIgnoreVideoUpdate(recordId, expectedTaskId, { ignoreTaskMismatch = false } = {}) {
   const safeId = Number(recordId);
   if (!Number.isFinite(safeId) || !db) return true;
   const row = db.getRecordById(safeId);
@@ -609,7 +636,8 @@ function shouldIgnoreVideoUpdate(recordId, expectedTaskId) {
   const currentStatus = normalizeVideoStatus(row.video_status);
   if (currentStatus === '成功') return true;
 
-  if (expectedTaskId != null) {
+  // 重试/补下载会换新 taskId 顶替旧任务，须跳过本条比对，否则请求在发出前就被拦截
+  if (expectedTaskId != null && !ignoreTaskMismatch) {
     const expected = String(expectedTaskId).trim();
     const currentBackendId = String(row.video_backend_id || '').trim();
     if (currentBackendId && expected && currentBackendId !== expected) return true;
@@ -749,7 +777,7 @@ function tryVideoRetry(recordId, backendUrl) {
     markVideoFailed(safeId, '未绑定工作台设备');
     return;
   }
-  downloadVideo(scannerDevice, record, { backendUrl, taskId: generateTaskId(), isRetry: true });
+  downloadVideo(scannerDevice, record, { backendUrl, taskId: generateTaskId(), isRetry: true, force: true });
 }
 
 function restorePendingVideoTasks() {
@@ -845,7 +873,7 @@ function requestVideoInfoFromBackend(urlString, backendUrl) {
 }
 
 // 触发海康录像下载
-function downloadVideo(scannerDevice, record, { backendUrl, taskId, isRetry } = {}) {
+function downloadVideo(scannerDevice, record, { backendUrl, taskId, isRetry, force } = {}) {
   const barcode = String(record?.barcode || '');
   const recordIdRaw = record?.id;
   const recordId = recordIdRaw == null || recordIdRaw === '' ? null : Number(recordIdRaw);
@@ -973,7 +1001,7 @@ function downloadVideo(scannerDevice, record, { backendUrl, taskId, isRetry } = 
       const taskIdStr = Number.isFinite(chosenTaskId) ? String(chosenTaskId) : null;
       // 时间窗已结束才到这里：此时提交才是真正「下载中」，记录离开「视频等待中」的语义清晰
       if (Number.isFinite(recordId)) {
-        if (shouldIgnoreVideoUpdate(recordId, taskIdStr)) return; // 期间已被新任务覆盖或已成功
+        if (shouldIgnoreVideoUpdate(recordId, taskIdStr, { ignoreTaskMismatch: force })) return; // 期间已被新任务覆盖或已成功
         markVideoSubmitted(recordId, chosenTaskId, '等待');
       }
       requestVideoInfoFromBackend(url.toString(), finalBackendUrl)
@@ -1073,17 +1101,16 @@ class ScannerManager {
       const now = Date.now();
       // 未知设备超过 1 小时没有再尝试连接 → 从列表清除，首页提示随之消失
       for (const [ip, v] of this.unknownClients) {
-        const seen = Date.parse(v.lastSeen);
-        if (!Number.isFinite(seen) || now - seen > 60 * 60 * 1000) {
+        const seenMs = Number(v.lastSeenMs);
+        if (!Number.isFinite(seenMs) || now - seenMs > 60 * 60 * 1000) {
           this.unknownClients.delete(ip);
           this.broadcast();
         }
       }
       for (const entry of this.devices.values()) {
         if (entry.state !== 'connected' && entry.state !== 'stale') continue;
-        const lastSeenRaw = entry.client?.last_seen_at;
-        const lastSeen = lastSeenRaw ? Date.parse(lastSeenRaw) : NaN;
-        const idleMs = Number.isFinite(lastSeen) ? now - lastSeen : Infinity;
+        const lastSeenMs = Number(entry.client?.last_seen_ms);
+        const idleMs = Number.isFinite(lastSeenMs) ? now - lastSeenMs : Infinity;
         if (entry.state === 'connected' && idleMs > STALE_THRESHOLD_MS) {
           entry.state = 'stale';
           console.warn(`[Watchdog] ${buildDeviceName(entry.device)} 已 ${Math.round(idleMs / 60000)} 分钟未收到数据，链路可能异常`);
@@ -1142,7 +1169,8 @@ class ScannerManager {
         const prev = this.unknownClients.get(ip);
         this.unknownClients.set(ip, {
           count: Math.min((prev?.count || 0) + 1, 999), // 封顶，避免扫码枪频繁重连导致计数无限涨
-          lastSeen: new Date().toISOString()
+          lastSeen: localTimestamp(),
+          lastSeenMs: Date.now()
         });
         // 同一 IP 只在首次出现时记一条日志/弹一次提示，之后持续重连完全静默；
         // 待 1 小时无连接被 watchdog 清除后若再连，才会再记一条
@@ -1171,8 +1199,9 @@ class ScannerManager {
       matchedDeviceEntry.client = {
         ip,
         port: Number.isFinite(remotePort) ? remotePort : null,
-        connected_at: new Date().toISOString(),
-        last_seen_at: new Date().toISOString()
+        connected_at: localTimestamp(),
+        last_seen_at: localTimestamp(),
+        last_seen_ms: Date.now()
       };
       this.setState(id, { state: 'connected', lastError: null });
       // 同一设备 30 秒内只弹一次「已连接」，防止扫码枪网络抖动反复重连时 toast 刷屏
@@ -1185,7 +1214,10 @@ class ScannerManager {
       socket.on('data', (chunk) => {
         const e = this.devices.get(id);
         if (!e || !this.tcpClients.has(ip)) return;
-        if (e.client) e.client.last_seen_at = new Date().toISOString();
+        if (e.client) {
+          e.client.last_seen_at = localTimestamp();
+          e.client.last_seen_ms = Date.now();
+        }
         const text = String(chunk || '');
         if (process.env.ZXJ_DEBUG === '1' && text.trim()) {
           console.log(`[RAW] ${buildDeviceName(e.device)} <- ${JSON.stringify(text.length > 100 ? text.slice(0, 100) + '…' : text)}`);
@@ -1414,8 +1446,9 @@ class ScannerManager {
         if (!e || e.serialPort !== sp) return;
         e.client = {
           port: identifier,
-          connected_at: new Date().toISOString(),
-          last_seen_at: new Date().toISOString()
+          connected_at: localTimestamp(),
+          last_seen_at: localTimestamp(),
+          last_seen_ms: Date.now()
         };
         this.setState(id, { state: 'connected', lastError: null });
         const openMs = Date.now();
@@ -1428,7 +1461,10 @@ class ScannerManager {
       sp.on('data', (chunk) => {
         const e = this.devices.get(id);
         if (!e || e.serialPort !== sp) return;
-        if (e.client) e.client.last_seen_at = new Date().toISOString();
+        if (e.client) {
+          e.client.last_seen_at = localTimestamp();
+          e.client.last_seen_ms = Date.now();
+        }
         e.buffer += String(chunk || '');
         if (e.buffer.length > 8192) e.buffer = e.buffer.slice(-8192);
         const extracted = extractCompletedLines(e.buffer);
@@ -1688,14 +1724,6 @@ ipcMain.handle('list-video-channels', async (event, params) => {
         typeof onLine === 'boolean'
           ? onLine
           : (typeof ch?.online === 'boolean' ? ch.online : (typeof ch?.on_line === 'boolean' ? ch.on_line : null));
-      const rtsp = buildRtspUrl({
-        ip: device.base_url,
-        username: device.username,
-        password: device.password,
-        channelId: id,
-        rtspPort,
-        streamType: 2
-      });
       const flvUrl = new URL('/live/stream', backendUrl);
       flvUrl.searchParams.set('channel', id);
       flvUrl.searchParams.set('ip', String(device.base_url || ''));
@@ -1704,7 +1732,7 @@ ipcMain.handle('list-video-channels', async (event, params) => {
       flvUrl.searchParams.set('password', String(device.password || ''));
       flvUrl.searchParams.set('rtspPort', String(rtspPort || ''));
       flvUrl.searchParams.set('streamType', '2');
-      return { id, name, online, rtsp, flv: flvUrl.toString() };
+      return { id, name, online, flv: flvUrl.toString() };
     });
     return { ok: true, channels };
   } catch (e) {
@@ -1890,7 +1918,7 @@ ipcMain.handle('retry-video-download', async (event, { id }) => {
   stopVideoPolling(safeId);
   videoRetryCounts.delete(safeId); // 用户手动重试：恢复完整自动重试机会
   const backendUrl = getVideoBackendUrl();
-  downloadVideo(scannerDevice, record, { backendUrl, taskId: generateTaskId(), isRetry: true });
+  downloadVideo(scannerDevice, record, { backendUrl, taskId: generateTaskId(), isRetry: true, force: true });
   showToast('已重新提交录像下载，状态稍后刷新');
   return { ok: true };
 });
@@ -1972,7 +2000,7 @@ ipcMain.handle('export-csv', async (event, params) => {
   }
   const { canceled, filePath } = await dialog.showSaveDialog({
     title: '导出CSV',
-    defaultPath: `scan-records-${new Date().toISOString().slice(0, 10)}.csv`,
+    defaultPath: `scan-records-${localTimestamp().slice(0, 10)}.csv`,
     filters: [{ name: 'CSV', extensions: ['csv'] }]
   });
   if (canceled || !filePath) return { ok: false };
@@ -2079,6 +2107,7 @@ ipcMain.handle('set-auto-restart', (event, params) => {
   startAutoRestartScheduler();
   return { ok: true, enabled, time };
 });
+
 
 // 批量补下载：对当前筛选条件下"无视频且非成功"的记录重新提交下载（上限 300 条）
 ipcMain.handle('retry-video-batch', (event, params) => {

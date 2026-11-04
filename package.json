@@ -1,6 +1,6 @@
 {
   "name": "zxj-video-v4",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Electron + better-sqlite3 barcode scanner",
   "main": "main.js",
   "author": "",
@@ -9,7 +9,8 @@
     "start": "electron .",
     "postinstall": "node scripts/prepare-electron-native.js",
     "clean:win": "node -e \"try{require('fs').rmSync('dist\\\\win-unpacked', { recursive: true, force: true })}catch(e){console.warn('clean warn:', e.message)}\"",
-    "build:win": "npm run clean:win && node scripts/prepare-electron-native.js && set CSC_IDENTITY_AUTO_DISCOVERY=false&& set ELECTRON_BUILDER_CACHE=%CD%\\dist\\.electron-builder-cache&& electron-builder --win --x64"
+    "build:win": "npm run clean:win && node scripts/prepare-electron-native.js && set CSC_IDENTITY_AUTO_DISCOVERY=false&& set ELECTRON_BUILDER_CACHE=%CD%\\dist\\.electron-builder-cache&& electron-builder --win --x64",
+    "build:win:cross": "node scripts/prepare-electron-native.js --win && electron-builder --win --x64"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
@@ -24,7 +25,6 @@
     "productName": "ZXJ Barcode Scanner",
     "files": [
       "main.js",
-      "hikvision.js",
       "preload.js",
       "toast-preload.js",
       "database.js",

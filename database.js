@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
+const { localTimestamp } = require('./utils');
 
 const RECORD_SELECT_FIELDS = `
   r.id,
@@ -151,7 +152,7 @@ class AppDatabase {
     const info = this._stmt('INSERT INTO scan_records (barcode, device_id) VALUES (?, ?);').run(barcode, hasDeviceId);
     const record = this.getRecordById(info.lastInsertRowid);
     if (record) return record;
-    return { barcode, device_id: hasDeviceId, scanned_at: new Date().toISOString() };
+    return { barcode, device_id: hasDeviceId, scanned_at: localTimestamp() };
   }
 
   setRecordVideoPath(id, videoPath) {

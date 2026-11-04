@@ -32,10 +32,19 @@ npm run build:win
 - WAL 增量写盘：每次扫码/状态更新均为增量落盘，不再全量重写文件
 
 ## 日志
-- 日志按天写入 `%APPDATA%\zxj-video-v4\logs\app-YYYY-MM-DD.log`，**长期保留、不自动删除**
+- 日志按天写入 `%APPDATA%\zxj-video-v4\logs\app-YYYY-MM-DD.log`，**保留一年，超期自动清理**（每天第一次写日志时检查一次）
 - 关键日志：`[SCAN]`（每次扫码）、`[TCP Server]`（连接/未知设备）、`[Watchdog]`（链路异常）、`[VideoDownload]`（录像触发）
 - 排查"扫码没记录"时优先翻日志：有 `[SCAN]` 说明数据已入库，没有则查网络/TCP 层
-- 日志量估算：每万次扫码约几 MB，长期积累也不占空间；如需清理，直接删除 `logs` 目录下旧文件即可
+- 日志量估算：每万次扫码约几 MB，一年以内不必手动清理；如需立即腾空间，直接删除 `logs` 目录下旧文件即可
+
+## 时间约定（重要）
+
+为避免"显示时间比实际慢 8 小时"这类问题再次出现，全项目统一遵守：
+
+- **存储/展示/日志**：一律用本地时间字符串 `localTimestamp()`（`utils.js`，格式 `YYYY-MM-DD HH:mm:ss[.SSS]`）。数据库时间列统一 `datetime('now', 'localtime')`
+- **内部时间差计算**（看门狗、超时判断）：一律用 epoch 毫秒（`Date.now()`），不要 `Date.parse()` 时间字符串
+- **海康相关**：本项目不直连海康设备（无 hikvision.js），录像下载/实时预览均经后端服务；若未来引入直连海康回放的代码，RTSP/ISAPI 回放参数按协议要求传 UTC，属唯一允许的例外
+- **禁止**：`new Date().toISOString()` 用于任何要展示或入库的时间
 
 ## 链路健壮性
 - TCP KeepAlive：拔线/断电约 1~2 分钟内可感知断链，首页显示红色告警条

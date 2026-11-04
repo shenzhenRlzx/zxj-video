@@ -384,6 +384,15 @@ function formatLogEntry(entry) {
   return `${ts} [${level}] ${msg}`.trim();
 }
 
+// 主进程传来的是 ISO(UTC) 字符串，展示前转为本地时间 "MM-DD HH:mm:ss"
+function formatLocalBrief(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return String(iso).replace('T', ' ').slice(5, 19);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 function appendLog(entry) {
   const line = formatLogEntry(entry);
   if (!line) return;
@@ -617,7 +626,7 @@ function renderDevices(devices) {
     const base = deviceStatusText(d.state);
     const clientPortText = d?.client?.port ? ` 客户端:${String(d.client.port)}` : '';
     const lastSeen = d?.client?.last_seen_at
-      ? ` 最近收数:${String(d.client.last_seen_at).replace('T', ' ').slice(5, 19)}`
+      ? ` 最近收数:${formatLocalBrief(d.client.last_seen_at)}`
       : '';
     statusCell.textContent = d.lastError
       ? `${base}: ${d.lastError}${clientPortText}`
